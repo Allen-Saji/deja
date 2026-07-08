@@ -3,6 +3,7 @@
 Run 1: python spikes/s3_checkpoint_resume.py crash   -> process dies mid-run, after ingest checkpointed
 Run 2: python spikes/s3_checkpoint_resume.py resume  -> same thread_id resumes, ingest must NOT re-run
 """
+import os
 import sys
 from pathlib import Path
 from typing import TypedDict
@@ -10,7 +11,7 @@ from typing import TypedDict
 from langchain_cockroachdb import CockroachDBSaver
 from langgraph.graph import StateGraph, START, END
 
-DB = "postgresql://root@localhost:26257/deja"
+DB = os.environ.get("DATABASE_URL", "postgresql://root@localhost:26257/deja")
 THREAD = {"configurable": {"thread_id": "run-001"}}
 MARKER = Path(__file__).with_name("s3_ingest_runs.log")
 

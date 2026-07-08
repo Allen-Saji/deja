@@ -3,6 +3,8 @@
 Uses deterministic fake embeddings (no API key needed) - this tests the DB layer only.
 Run: python spikes/s3_vectorstore.py
 """
+import os
+
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_cockroachdb import (
     CockroachDBEngine,
@@ -12,7 +14,9 @@ from langchain_cockroachdb import (
 
 # cockroachdb dialect (not vanilla postgresql) - CRDB's version string breaks the pg dialect;
 # +psycopg (v3) gives the async driver the engine requires
-DB = "cockroachdb+psycopg://root@localhost:26257/deja"
+DB = os.environ.get("DATABASE_URL", "postgresql://root@localhost:26257/deja").replace(
+    "postgresql://", "cockroachdb+psycopg://", 1
+)
 DIM = 384
 
 engine = CockroachDBEngine.from_connection_string(DB)
