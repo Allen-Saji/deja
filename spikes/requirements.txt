@@ -1,0 +1,3 @@
+langchain-cockroachdb==0.2.1
+langgraph
+langchain-core

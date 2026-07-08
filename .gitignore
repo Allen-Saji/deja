@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+spikes/s3_ingest_runs.log
