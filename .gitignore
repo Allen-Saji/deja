@@ -1,6 +1,13 @@
-.venv/
-__pycache__/
-*.pyc
 .env
 .env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+build/
+dist/
+*.egg-info/
 spikes/s3_ingest_runs.log
