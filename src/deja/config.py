@@ -22,17 +22,21 @@ def configure_root_certificate(database_url: str, certificate_path: str) -> str:
 class Settings:
     database_url: str = field(repr=False)
     groq_api_key: str = field(repr=False)
+    voyage_api_key: str = field(repr=False)
     groq_model: str = "llama-3.3-70b-versatile"
+    voyage_model: str = "voyage-4-lite"
 
     @classmethod
     def from_env(cls) -> Settings:
         database_url = os.environ.get("DATABASE_URL", "").strip()
         groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
+        voyage_api_key = os.environ.get("VOYAGE_API_KEY", "").strip()
         missing = [
             name
             for name, value in (
                 ("DATABASE_URL", database_url),
                 ("GROQ_API_KEY", groq_api_key),
+                ("VOYAGE_API_KEY", voyage_api_key),
             )
             if not value
         ]
@@ -44,5 +48,7 @@ class Settings:
                 os.environ.get("DATABASE_CA_CERT", "").strip(),
             ),
             groq_api_key=groq_api_key,
+            voyage_api_key=voyage_api_key,
             groq_model=os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
+            voyage_model=os.environ.get("VOYAGE_MODEL", "voyage-4-lite").strip(),
         )

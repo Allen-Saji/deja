@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Severity = Literal["info", "warning", "critical"]
+IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 class Alert(BaseModel):
@@ -24,6 +26,8 @@ class Alert(BaseModel):
         normalized = value.strip().lower().replace(" ", "-")
         if not normalized:
             raise ValueError("identifier cannot be blank")
+        if not IDENTIFIER_PATTERN.fullmatch(normalized):
+            raise ValueError("identifier contains unsupported characters")
         return normalized
 
     @field_validator("labels")
@@ -53,6 +57,82 @@ class TriageDecision(BaseModel):
     rationale: str = Field(min_length=1, max_length=3_000)
     escalate: bool
     postmortem_summary: str = Field(min_length=1, max_length=4_000)
+    cited_incident_ids: list[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("cited_incident_ids")
+    @classmethod
+    def validate_citations(cls, value: list[str]) -> list[str]:
+        normalized = [incident_id.strip().upper() for incident_id in value]
+        if any(not incident_id.startswith("INC-") for incident_id in normalized):
+            raise ValueError("citations must be incident IDs")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("citations must be unique")
+        return normalized
+
+
+class Precedent(BaseModel):
+    incident_id: str
+    run_id: str
+    fingerprint: str
+    service: str
+    alert_type: str
+    severity: Severity
+    summary: str
+    action_outcome: str
+    distance: float = Field(ge=0)
+
+
+class NoiseStatus(BaseModel):
+    fingerprint: str
+    occurrence_count: int = Field(ge=1)
+    stable_count: int = Field(ge=0)
+    notification_suppressed: bool
+    evidence_run_ids: list[str] = Field(default_factory=list)
+
+
+class RunbookCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    service: str = Field(min_length=1, max_length=100)
+    alert_type: str = Field(min_length=1, max_length=100)
+    recommended_action: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("name", "recommended_action")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("runbook text cannot be blank")
+        return normalized
+
+    @field_validator("service", "alert_type")
+    @classmethod
+    def normalize_matcher(cls, value: str) -> str:
+        normalized = value.strip().lower().replace(" ", "-")
+        if not normalized:
+            raise ValueError("runbook matcher cannot be blank")
+        if normalized != "*" and not IDENTIFIER_PATTERN.fullmatch(normalized):
+            raise ValueError("runbook matcher contains unsupported characters")
+        return normalized
+
+
+class RunbookScore(BaseModel):
+    runbook_id: str
+    name: str
+    service: str
+    alert_type: str
+    recommended_action: str
+    success_count: int = Field(ge=0)
+    failure_count: int = Field(ge=0)
+    sample_count: int = Field(ge=0)
+    efficacy_score: float = Field(ge=0, le=1)
+
+
+class RunbookOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    succeeded: bool
 
 
 class RunResult(BaseModel):
@@ -63,8 +143,11 @@ class RunResult(BaseModel):
     triage: TriageDecision
     action_outcome: str
     postmortem: str
+    diagnosis_ms: int = Field(ge=0)
     steps: list[str]
-    precedents: list[dict[str, Any]] = Field(default_factory=list)
+    precedents: list[Precedent] = Field(default_factory=list)
+    noise: NoiseStatus | None = None
+    selected_runbook: RunbookScore | None = None
 
 
 class RunRecord(BaseModel):
@@ -78,5 +161,9 @@ class RunRecord(BaseModel):
     triage: dict[str, Any] | None = None
     action_outcome: str | None = None
     postmortem: str | None = None
+    diagnosis_ms: int | None = Field(default=None, ge=0)
+    precedent_ids: list[str] = Field(default_factory=list)
+    notification_suppressed: bool = False
+    selected_runbook_id: str | None = None
     started_at: str
     completed_at: str | None = None

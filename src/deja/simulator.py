@@ -50,24 +50,22 @@ def signed_headers(
     return {str(key): str(value) for key, value in request.headers.items()}
 
 
-def main() -> None:
-    args = parse_args()
-    payload = {
-        "service": args.service,
-        "alert_type": args.alert_type,
-        "severity": args.severity,
-        "message": args.message,
-        "labels": {"environment": "production", "region": "ap-south-1"},
-    }
-    url = f"{args.url.rstrip('/')}/alerts"
+def submit_alert(
+    base_url: str,
+    payload: dict[str, Any],
+    *,
+    aws_profile: str | None = None,
+    aws_region: str = "ap-south-1",
+) -> dict[str, Any]:
+    url = f"{base_url.rstrip('/')}/alerts"
     body = json.dumps(payload).encode()
     headers: dict[str, Any] = {"Content-Type": "application/json"}
-    if args.aws_profile:
+    if aws_profile:
         headers = signed_headers(
             url=url,
             body=body,
-            profile=args.aws_profile,
-            region=args.aws_region,
+            profile=aws_profile,
+            region=aws_region,
         )
     request = urllib.request.Request(
         url,
@@ -77,10 +75,27 @@ def main() -> None:
     )
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
-            result = json.load(response)
+            return json.load(response)
     except urllib.error.HTTPError as error:
-        body = error.read().decode(errors="replace")
-        raise SystemExit(f"Deja returned HTTP {error.code}: {body}") from None
+        error_body = error.read().decode(errors="replace")
+        raise SystemExit(f"Deja returned HTTP {error.code}: {error_body}") from None
+
+
+def main() -> None:
+    args = parse_args()
+    payload = {
+        "service": args.service,
+        "alert_type": args.alert_type,
+        "severity": args.severity,
+        "message": args.message,
+        "labels": {"environment": "production", "region": "ap-south-1"},
+    }
+    result = submit_alert(
+        args.url,
+        payload,
+        aws_profile=args.aws_profile,
+        aws_region=args.aws_region,
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

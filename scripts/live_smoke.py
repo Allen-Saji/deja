@@ -1,4 +1,4 @@
-"""Run one real P1 workflow against configured Groq and CockroachDB services."""
+"""Run one real P2 workflow against configured Groq, VoyageAI, and CockroachDB."""
 
 import json
 
@@ -26,6 +26,13 @@ def main() -> None:
                 "status": result.status,
                 "steps": result.steps,
                 "diagnosis": result.triage.diagnosis,
+                "diagnosis_ms": result.diagnosis_ms,
+                "precedent_ids": [item.incident_id for item in result.precedents],
+                "cited_incident_ids": result.triage.cited_incident_ids,
+                "notification_suppressed": result.noise.notification_suppressed,
+                "selected_runbook_id": (
+                    result.selected_runbook.runbook_id if result.selected_runbook else None
+                ),
                 "action_outcome": result.action_outcome,
             },
             indent=2,

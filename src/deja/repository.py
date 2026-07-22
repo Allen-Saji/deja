@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from time import sleep
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from deja.models import Alert, RunRecord, TriageDecision
+from deja.models import (
+    Alert,
+    NoiseStatus,
+    RunbookCreate,
+    RunbookScore,
+    RunRecord,
+    TriageDecision,
+)
 
 SCHEMA_STATEMENTS = (
     """
@@ -50,7 +60,95 @@ SCHEMA_STATEMENTS = (
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    """
+    ALTER TABLE deja_runs
+    ADD COLUMN IF NOT EXISTS diagnosis_ms INT8
+    """,
+    """
+    ALTER TABLE deja_runs
+    ADD COLUMN IF NOT EXISTS precedent_ids JSONB NOT NULL DEFAULT '[]'::JSONB
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS deja_alert_noise (
+        fingerprint STRING PRIMARY KEY,
+        occurrence_count INT8 NOT NULL,
+        stable_count INT8 NOT NULL,
+        last_triage_signature STRING,
+        notification_suppressed BOOL NOT NULL DEFAULT false,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS deja_alert_noise_observations (
+        run_id STRING PRIMARY KEY REFERENCES deja_runs (run_id),
+        fingerprint STRING NOT NULL,
+        triage_signature STRING NOT NULL,
+        suppression_eligible BOOL NOT NULL,
+        notification_suppressed BOOL NOT NULL,
+        observed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS deja_noise_observations_fingerprint_idx
+    ON deja_alert_noise_observations (fingerprint, observed_at DESC)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS deja_runbooks (
+        runbook_id STRING PRIMARY KEY,
+        name STRING NOT NULL,
+        service STRING NOT NULL,
+        alert_type STRING NOT NULL,
+        recommended_action STRING NOT NULL,
+        enabled BOOL NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS deja_runbooks_match_idx
+    ON deja_runbooks (service, alert_type, enabled)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS deja_runbook_executions (
+        run_id STRING PRIMARY KEY REFERENCES deja_runs (run_id),
+        runbook_id STRING NOT NULL REFERENCES deja_runbooks (runbook_id),
+        succeeded BOOL,
+        selected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        outcome_recorded_at TIMESTAMPTZ
+    )
+    """,
 )
+
+
+def triage_signature(triage: TriageDecision) -> str:
+    evidence = {
+        "diagnosis": triage.diagnosis.strip().lower(),
+        "recommended_action": triage.recommended_action.strip().lower(),
+    }
+    encoded = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def next_noise_state(
+    *,
+    occurrence_count: int,
+    stable_count: int,
+    last_signature: str | None,
+    signature: str,
+    eligible: bool,
+) -> tuple[int, int, bool]:
+    next_occurrence_count = occurrence_count + 1
+    if not eligible:
+        next_stable_count = 0
+    elif last_signature == signature:
+        next_stable_count = stable_count + 1
+    else:
+        next_stable_count = 1
+    return (
+        next_occurrence_count,
+        next_stable_count,
+        eligible and next_stable_count >= 3,
+    )
 
 
 class IncidentRepository:
@@ -70,6 +168,21 @@ class IncidentRepository:
     def check_connection(self) -> None:
         with self._connection() as connection:
             connection.execute("SELECT 1").fetchone()
+
+    def completed_incident_ids(self, incident_ids: list[str]) -> set[str]:
+        if not incident_ids:
+            return set()
+        placeholders = ", ".join("%s" for _incident_id in incident_ids)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT incident_id
+                FROM deja_incidents
+                WHERE status = 'completed' AND incident_id IN ({placeholders})
+                """,
+                tuple(incident_ids),
+            ).fetchall()
+        return {row["incident_id"] for row in rows}
 
     def begin_run(
         self,
@@ -118,6 +231,258 @@ class IncidentRepository:
                 "UPDATE deja_runs SET current_step = %s WHERE run_id = %s",
                 (step, run_id),
             )
+
+    def record_diagnosis(
+        self,
+        *,
+        run_id: str,
+        diagnosis_ms: int,
+        precedent_ids: list[str],
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE deja_runs
+                SET diagnosis_ms = %s, precedent_ids = %s
+                WHERE run_id = %s
+                """,
+                (max(0, diagnosis_ms), Jsonb(precedent_ids), run_id),
+            )
+
+    def record_noise_observation(
+        self,
+        *,
+        run_id: str,
+        fingerprint: str,
+        severity: str,
+        triage: TriageDecision,
+    ) -> NoiseStatus:
+        for attempt in range(3):
+            try:
+                return self._record_noise_observation_once(
+                    run_id=run_id,
+                    fingerprint=fingerprint,
+                    severity=severity,
+                    triage=triage,
+                )
+            except psycopg.errors.SerializationFailure:
+                if attempt == 2:
+                    raise
+                sleep(0.05 * (2**attempt))
+        raise RuntimeError("noise observation retry loop exhausted")
+
+    def _record_noise_observation_once(
+        self,
+        *,
+        run_id: str,
+        fingerprint: str,
+        severity: str,
+        triage: TriageDecision,
+    ) -> NoiseStatus:
+        signature = triage_signature(triage)
+        eligible = severity != "critical" and not triage.escalate
+        with self._connection() as connection:
+            inserted = connection.execute(
+                """
+                INSERT INTO deja_alert_noise_observations (
+                    run_id, fingerprint, triage_signature,
+                    suppression_eligible, notification_suppressed
+                ) VALUES (%s, %s, %s, %s, false)
+                ON CONFLICT (run_id) DO NOTHING
+                RETURNING run_id
+                """,
+                (run_id, fingerprint, signature, eligible),
+            ).fetchone()
+
+            if inserted:
+                row = connection.execute(
+                    """
+                    INSERT INTO deja_alert_noise (
+                        fingerprint, occurrence_count, stable_count,
+                        last_triage_signature, notification_suppressed
+                    ) VALUES (%s, 1, %s, %s, false)
+                    ON CONFLICT (fingerprint) DO UPDATE SET
+                        occurrence_count = deja_alert_noise.occurrence_count + 1,
+                        stable_count = CASE
+                            WHEN %s = false THEN 0
+                            WHEN deja_alert_noise.last_triage_signature = %s
+                                THEN deja_alert_noise.stable_count + 1
+                            ELSE 1
+                        END,
+                        last_triage_signature = excluded.last_triage_signature,
+                        notification_suppressed = CASE
+                            WHEN %s = false THEN false
+                            WHEN deja_alert_noise.last_triage_signature = %s
+                                THEN deja_alert_noise.stable_count + 1 >= 3
+                            ELSE false
+                        END,
+                        updated_at = now()
+                    RETURNING occurrence_count, stable_count, notification_suppressed
+                    """,
+                    (
+                        fingerprint,
+                        1 if eligible else 0,
+                        signature,
+                        eligible,
+                        signature,
+                        eligible,
+                        signature,
+                    ),
+                ).fetchone()
+                connection.execute(
+                    """
+                    UPDATE deja_alert_noise_observations
+                    SET notification_suppressed = %s
+                    WHERE run_id = %s
+                    """,
+                    (row["notification_suppressed"], run_id),
+                )
+            else:
+                row = connection.execute(
+                    """
+                    SELECT ledger.occurrence_count, ledger.stable_count,
+                           observation.notification_suppressed
+                    FROM deja_alert_noise AS ledger
+                    JOIN deja_alert_noise_observations AS observation
+                      ON observation.fingerprint = ledger.fingerprint
+                    WHERE ledger.fingerprint = %s AND observation.run_id = %s
+                    """,
+                    (fingerprint, run_id),
+                ).fetchone()
+            evidence = connection.execute(
+                """
+                SELECT run_id
+                FROM deja_alert_noise_observations
+                WHERE fingerprint = %s
+                ORDER BY observed_at DESC
+                LIMIT 20
+                """,
+                (fingerprint,),
+            ).fetchall()
+
+        return NoiseStatus(
+            fingerprint=fingerprint,
+            occurrence_count=row["occurrence_count"],
+            stable_count=row["stable_count"],
+            notification_suppressed=row["notification_suppressed"],
+            evidence_run_ids=[item["run_id"] for item in evidence],
+        )
+
+    def upsert_runbook(self, runbook_id: str, definition: RunbookCreate) -> RunbookScore:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO deja_runbooks (
+                    runbook_id, name, service, alert_type, recommended_action
+                ) VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (runbook_id) DO UPDATE SET
+                    name = excluded.name,
+                    service = excluded.service,
+                    alert_type = excluded.alert_type,
+                    recommended_action = excluded.recommended_action,
+                    enabled = true,
+                    updated_at = now()
+                """,
+                (
+                    runbook_id,
+                    definition.name,
+                    definition.service,
+                    definition.alert_type,
+                    definition.recommended_action,
+                ),
+            )
+        score = self.get_runbook_score(runbook_id)
+        if score is None:
+            raise RuntimeError("runbook write did not persist")
+        return score
+
+    def select_runbook(self, alert: Alert) -> RunbookScore | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                self._runbook_score_query(
+                    """
+                    WHERE rb.enabled = true
+                      AND rb.service IN (%s, '*')
+                      AND rb.alert_type IN (%s, '*')
+                    """,
+                    """
+                    ORDER BY efficacy_score DESC, sample_count DESC,
+                             specificity DESC, rb.runbook_id
+                    LIMIT 1
+                    """,
+                ),
+                (alert.service, alert.alert_type),
+            ).fetchone()
+        return RunbookScore.model_validate(row) if row else None
+
+    def get_runbook_score(self, runbook_id: str) -> RunbookScore | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                self._runbook_score_query("WHERE rb.runbook_id = %s", ""),
+                (runbook_id,),
+            ).fetchone()
+        return RunbookScore.model_validate(row) if row else None
+
+    @staticmethod
+    def _runbook_score_query(where_clause: str, order_clause: str) -> str:
+        return f"""
+            SELECT
+                rb.runbook_id,
+                rb.name,
+                rb.service,
+                rb.alert_type,
+                rb.recommended_action,
+                count(*) FILTER (WHERE execution.succeeded = true)::INT8 AS success_count,
+                count(*) FILTER (WHERE execution.succeeded = false)::INT8 AS failure_count,
+                count(execution.succeeded)::INT8 AS sample_count,
+                (
+                    (count(*) FILTER (WHERE execution.succeeded = true)) + 1.0
+                ) / (count(execution.succeeded) + 2.0) AS efficacy_score,
+                (CASE WHEN rb.service = '*' THEN 0 ELSE 1 END
+                 + CASE WHEN rb.alert_type = '*' THEN 0 ELSE 1 END) AS specificity
+            FROM deja_runbooks AS rb
+            LEFT JOIN deja_runbook_executions AS execution
+              ON execution.runbook_id = rb.runbook_id
+            {where_clause}
+            GROUP BY rb.runbook_id, rb.name, rb.service, rb.alert_type,
+                     rb.recommended_action
+            {order_clause}
+        """
+
+    def record_runbook_selection(self, run_id: str, runbook_id: str) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO deja_runbook_executions (run_id, runbook_id)
+                VALUES (%s, %s)
+                ON CONFLICT (run_id) DO NOTHING
+                """,
+                (run_id, runbook_id),
+            )
+
+    def record_runbook_outcome(self, run_id: str, succeeded: bool) -> RunbookScore | None:
+        with self._connection() as connection:
+            execution = connection.execute(
+                """
+                SELECT runbook_id, succeeded
+                FROM deja_runbook_executions
+                WHERE run_id = %s
+                FOR UPDATE
+                """,
+                (run_id,),
+            ).fetchone()
+            if execution is None:
+                return None
+            if execution["succeeded"] is None:
+                connection.execute(
+                    """
+                    UPDATE deja_runbook_executions
+                    SET succeeded = %s, outcome_recorded_at = now()
+                    WHERE run_id = %s AND succeeded IS NULL
+                    """,
+                    (succeeded, run_id),
+                )
+        return self.get_runbook_score(execution["runbook_id"])
 
     def complete_run(
         self,
@@ -183,11 +548,18 @@ class IncidentRepository:
                     i.triage,
                     i.action_outcome,
                     p.summary AS postmortem,
+                    r.diagnosis_ms,
+                    r.precedent_ids,
+                    coalesce(noise.notification_suppressed, false)
+                        AS notification_suppressed,
+                    execution.runbook_id AS selected_runbook_id,
                     r.started_at::STRING AS started_at,
                     r.completed_at::STRING AS completed_at
                 FROM deja_runs AS r
                 JOIN deja_incidents AS i ON i.incident_id = r.incident_id
                 LEFT JOIN deja_postmortems AS p ON p.run_id = r.run_id
+                LEFT JOIN deja_alert_noise_observations AS noise ON noise.run_id = r.run_id
+                LEFT JOIN deja_runbook_executions AS execution ON execution.run_id = r.run_id
                 WHERE r.run_id = %s
                 """,
                 (run_id,),

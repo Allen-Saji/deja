@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements.lock.txt
 COPY src ${LAMBDA_TASK_ROOT}/src
 COPY certs ${LAMBDA_TASK_ROOT}/certs
 
-ENV PYTHONPATH="${LAMBDA_TASK_ROOT}/src"
+ENV PYTHONPATH="${LAMBDA_TASK_ROOT}/src" \
+    HF_HOME="/tmp/huggingface"
 
 CMD ["deja.app.handler"]

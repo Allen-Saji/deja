@@ -3,8 +3,15 @@ import asyncio
 import pytest
 from fastapi import HTTPException
 
-from deja.app import get_run, opaque_error_handler, ready, submit_alert
-from deja.models import Alert, RunRecord
+from deja.app import (
+    create_runbook,
+    get_run,
+    opaque_error_handler,
+    ready,
+    record_runbook_outcome,
+    submit_alert,
+)
+from deja.models import Alert, RunbookCreate, RunbookOutcome, RunbookScore, RunRecord
 
 
 class FailingService:
@@ -30,6 +37,17 @@ class LookupService:
         if self.error:
             raise self.error
         return self.result
+
+
+class RunbookService:
+    def __init__(self, score: RunbookScore | None) -> None:
+        self.score = score
+
+    def create_runbook(self, _definition):
+        return self.score
+
+    def record_runbook_outcome(self, _run_id, _succeeded):
+        return self.score
 
 
 def test_processing_error_is_converted_to_opaque_http_error() -> None:
@@ -86,3 +104,35 @@ def test_get_run_and_global_handler_hide_provider_errors() -> None:
     response = asyncio.run(opaque_error_handler(None, RuntimeError("private detail")))
     assert response.status_code == 500
     assert response.body == b'{"detail":"incident processing failed"}'
+
+
+def test_runbook_creation_and_outcome_feedback_return_ranked_score() -> None:
+    score = RunbookScore(
+        runbook_id="RB-TEST",
+        name="Rollback deploy",
+        service="payments-api",
+        alert_type="http-500-spike",
+        recommended_action="Roll back the latest deploy.",
+        success_count=2,
+        failure_count=1,
+        sample_count=3,
+        efficacy_score=0.6,
+    )
+    service = RunbookService(score)
+    definition = RunbookCreate(
+        name=score.name,
+        service=score.service,
+        alert_type=score.alert_type,
+        recommended_action=score.recommended_action,
+    )
+
+    assert create_runbook(definition, service) == score
+    assert record_runbook_outcome("RUN-TEST", RunbookOutcome(succeeded=True), service) == score
+
+    with pytest.raises(HTTPException) as raised:
+        record_runbook_outcome(
+            "RUN-MISSING",
+            RunbookOutcome(succeeded=True),
+            RunbookService(None),
+        )
+    assert raised.value.status_code == 404

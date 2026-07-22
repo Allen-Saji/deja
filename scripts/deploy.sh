@@ -7,6 +7,7 @@ FUNCTION_NAME="${FUNCTION_NAME:-deja-api}"
 ECR_REPOSITORY="${ECR_REPOSITORY:-deja}"
 ROLE_NAME="${ROLE_NAME:-deja-lambda-role}"
 GROQ_MODEL="${GROQ_MODEL:-llama-3.3-70b-versatile}"
+VOYAGE_MODEL="${VOYAGE_MODEL:-voyage-4-lite}"
 
 if ! test -n "${DATABASE_URL:-}"; then
   echo "DATABASE_URL is required" >&2
@@ -14,6 +15,10 @@ if ! test -n "${DATABASE_URL:-}"; then
 fi
 if ! test -n "${GROQ_API_KEY:-}"; then
   echo "GROQ_API_KEY is required" >&2
+  exit 1
+fi
+if ! test -n "${VOYAGE_API_KEY:-}"; then
+  echo "VOYAGE_API_KEY is required" >&2
   exit 1
 fi
 
@@ -25,7 +30,7 @@ for command in aws docker git; do
 done
 
 ACCOUNT_ID="$(AWS_PROFILE="$AWS_PROFILE" aws sts get-caller-identity --query Account --output text)"
-IMAGE_TAG="p1-$(date -u +%Y%m%d%H%M%S)"
+IMAGE_TAG="p2-$(date -u +%Y%m%d%H%M%S)"
 IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG"
 
 if ! AWS_PROFILE="$AWS_PROFILE" aws ecr describe-repositories \
@@ -59,11 +64,20 @@ fi
 
 ROLE_ARN="$(AWS_PROFILE="$AWS_PROFILE" aws iam get-role \
   --role-name "$ROLE_NAME" --query Role.Arn --output text)"
-ENVIRONMENT="Variables={DATABASE_URL=$DATABASE_URL,DATABASE_CA_CERT=/var/task/certs/cockroach-cloud-root.crt,GROQ_API_KEY=$GROQ_API_KEY,GROQ_MODEL=$GROQ_MODEL}"
+ENVIRONMENT="Variables={DATABASE_URL=$DATABASE_URL,DATABASE_CA_CERT=/var/task/certs/cockroach-cloud-root.crt,GROQ_API_KEY=$GROQ_API_KEY,GROQ_MODEL=$GROQ_MODEL,VOYAGE_API_KEY=$VOYAGE_API_KEY,VOYAGE_MODEL=$VOYAGE_MODEL}"
 
 if AWS_PROFILE="$AWS_PROFILE" aws lambda get-function \
   --region "$AWS_REGION" \
   --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+  AWS_PROFILE="$AWS_PROFILE" aws lambda update-function-configuration \
+    --region "$AWS_REGION" \
+    --function-name "$FUNCTION_NAME" \
+    --timeout 90 \
+    --memory-size 1024 \
+    --environment "$ENVIRONMENT" >/dev/null
+  AWS_PROFILE="$AWS_PROFILE" aws lambda wait function-updated-v2 \
+    --region "$AWS_REGION" \
+    --function-name "$FUNCTION_NAME"
   AWS_PROFILE="$AWS_PROFILE" aws lambda update-function-code \
     --region "$AWS_REGION" \
     --function-name "$FUNCTION_NAME" \
@@ -71,12 +85,6 @@ if AWS_PROFILE="$AWS_PROFILE" aws lambda get-function \
   AWS_PROFILE="$AWS_PROFILE" aws lambda wait function-updated-v2 \
     --region "$AWS_REGION" \
     --function-name "$FUNCTION_NAME"
-  AWS_PROFILE="$AWS_PROFILE" aws lambda update-function-configuration \
-    --region "$AWS_REGION" \
-    --function-name "$FUNCTION_NAME" \
-    --timeout 90 \
-    --memory-size 1024 \
-    --environment "$ENVIRONMENT" >/dev/null
 else
   AWS_PROFILE="$AWS_PROFILE" aws lambda create-function \
     --region "$AWS_REGION" \
