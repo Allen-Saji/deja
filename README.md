@@ -8,20 +8,23 @@ Built for the CockroachDB x AWS Hackathon.
 
 ## Architecture
 
-```text
-alert simulator
-    -> IAM-protected AWS Lambda Function URL
-    -> FastAPI + Mangum
-    -> LangGraph: ingest -> recall -> triage -> act -> writeback
-         working memory: CockroachDBSaver checkpoints
-         episodic memory: VoyageAI embeddings + CockroachDB C-SPANN
-         procedural memory: outcome-ranked runbooks
-         triage: Groq llama-3.3-70b-versatile
-         system of record: incidents, runs, and postmortems in CockroachDB
-```
+![Deja architecture](docs/architecture/deja-architecture.png)
 
-The `act` node remains advisory. It can rank a runbook or suppress a duplicate notification, but
-it never changes real infrastructure and never skips incident processing.
+An IAM-signed alert enters the FastAPI service on AWS Lambda and starts one durable LangGraph run.
+The graph persists the alert, recalls completed precedents, asks Groq for a validated diagnosis,
+selects an advisory action, and writes the completed incident back to CockroachDB.
+
+CockroachDB supports three kinds of memory:
+
+- **Working memory:** `CockroachDBSaver` checkpoints every graph node under the run ID, providing
+  the durable state needed for retry and resume.
+- **Episodic memory:** VoyageAI embeds novel postmortems. C-SPANN retrieves relevant completed
+  incidents, and triage may cite only incident IDs returned by that search.
+- **Procedural memory:** the noise ledger learns stable duplicate alerts, while runbook outcomes
+  produce Laplace-smoothed efficacy scores for later recommendations.
+
+The `act` node remains inside a strict safety boundary. It may suppress a duplicate notification
+or recommend a runbook, but it never changes infrastructure and never skips incident processing.
 
 ## Status
 
