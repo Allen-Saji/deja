@@ -9,9 +9,7 @@ from deja import simulator
 
 
 def test_signed_headers_add_lambda_authorization(monkeypatch) -> None:
-    session = SimpleNamespace(
-        get_credentials=lambda: Credentials("test-access", "test-secret")
-    )
+    session = SimpleNamespace(get_credentials=lambda: Credentials("test-access", "test-secret"))
     monkeypatch.setattr("boto3.Session", lambda **_kwargs: session)
 
     headers = simulator.signed_headers(
@@ -36,3 +34,47 @@ def test_main_sends_unsigned_alert_and_prints_result(monkeypatch, capsys) -> Non
     simulator.main()
 
     assert json.loads(capsys.readouterr().out) == {"status": "completed"}
+
+
+def test_submit_alert_polls_queued_run_until_completion(monkeypatch) -> None:
+    responses = iter(
+        [
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "run_id": "RUN-TEST",
+                        "status": "queued",
+                        "status_url": "/runs/RUN-TEST",
+                    }
+                ).encode()
+            ),
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "run_id": "RUN-TEST",
+                        "status": "running",
+                    }
+                ).encode()
+            ),
+            io.BytesIO(
+                json.dumps(
+                    {
+                        "run_id": "RUN-TEST",
+                        "status": "completed",
+                    }
+                ).encode()
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda _request, timeout: next(responses),
+    )
+    monkeypatch.setattr("deja.simulator.time.sleep", lambda _seconds: None)
+
+    result = simulator.submit_alert(
+        "http://localhost:8000",
+        {"service": "payments-api"},
+    )
+
+    assert result["status"] == "completed"

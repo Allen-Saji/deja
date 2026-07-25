@@ -38,11 +38,9 @@ def main() -> None:
     replay = submit_alert(args.url, payload, **request_options)
 
     assert novel["status"] == "completed"
-    assert novel["precedents"] == []
+    assert novel["precedent_ids"] == []
     assert replay["status"] == "completed"
-    assert novel["incident_id"] in {
-        precedent["incident_id"] for precedent in replay["precedents"]
-    }
+    assert novel["incident_id"] in replay["precedent_ids"]
     assert novel["incident_id"] in replay["triage"]["cited_incident_ids"]
 
     print(
