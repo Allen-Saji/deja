@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from time import sleep
 from typing import Any
 
@@ -14,6 +15,7 @@ from psycopg.types.json import Jsonb
 from deja.models import (
     Alert,
     NoiseStatus,
+    RunAttemptRecord,
     RunbookCreate,
     RunbookScore,
     RunRecord,
@@ -67,6 +69,56 @@ SCHEMA_STATEMENTS = (
     """
     ALTER TABLE deja_runs
     ADD COLUMN IF NOT EXISTS precedent_ids JSONB NOT NULL DEFAULT '[]'::JSONB
+    """,
+    """
+    ALTER TABLE deja_runs
+    ADD COLUMN IF NOT EXISTS attempt_count INT8 NOT NULL DEFAULT 0
+    """,
+    """
+    ALTER TABLE deja_runs
+    ADD COLUMN IF NOT EXISTS execution_token STRING
+    """,
+    """
+    ALTER TABLE deja_runs
+    ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ
+    """,
+    """
+    ALTER TABLE deja_runs
+    ADD COLUMN IF NOT EXISTS last_resume_from STRING
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS deja_run_attempts (
+        execution_token STRING PRIMARY KEY,
+        run_id STRING NOT NULL REFERENCES deja_runs (run_id),
+        attempt_number INT8 NOT NULL,
+        resumed_from STRING NOT NULL,
+        status STRING NOT NULL,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        finished_at TIMESTAMPTZ,
+        error_type STRING,
+        UNIQUE (run_id, attempt_number)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS deja_run_attempts_run_idx
+    ON deja_run_attempts (run_id, attempt_number DESC)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS deja_node_effects (
+        run_id STRING NOT NULL REFERENCES deja_runs (run_id),
+        node_name STRING NOT NULL,
+        result JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (run_id, node_name)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS deja_chaos_injections (
+        run_id STRING NOT NULL REFERENCES deja_runs (run_id),
+        before_node STRING NOT NULL,
+        injected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (run_id, before_node)
+    )
     """,
     """
     CREATE TABLE IF NOT EXISTS deja_alert_noise (
@@ -184,6 +236,42 @@ class IncidentRepository:
             ).fetchall()
         return {row["incident_id"] for row in rows}
 
+    def reserve_run(
+        self,
+        *,
+        alert: Alert,
+        run_id: str,
+        incident_id: str,
+        fingerprint: str,
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO deja_incidents (
+                    incident_id, fingerprint, service, alert_type, severity,
+                    message, labels, status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'queued')
+                ON CONFLICT (incident_id) DO NOTHING
+                """,
+                (
+                    incident_id,
+                    fingerprint,
+                    alert.service,
+                    alert.alert_type,
+                    alert.severity,
+                    alert.message,
+                    Jsonb(alert.labels),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO deja_runs (run_id, incident_id, status, current_step)
+                VALUES (%s, %s, 'queued', 'queued')
+                ON CONFLICT (run_id) DO NOTHING
+                """,
+                (run_id, incident_id),
+            )
+
     def begin_run(
         self,
         *,
@@ -200,7 +288,11 @@ class IncidentRepository:
                     message, labels, status
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'triaging')
                 ON CONFLICT (incident_id) DO UPDATE SET
-                    status = excluded.status,
+                    status = CASE
+                        WHEN deja_incidents.status = 'completed'
+                            THEN deja_incidents.status
+                        ELSE excluded.status
+                    END,
                     updated_at = now()
                 """,
                 (
@@ -217,20 +309,173 @@ class IncidentRepository:
                 """
                 INSERT INTO deja_runs (run_id, incident_id, status, current_step)
                 VALUES (%s, %s, 'running', 'ingest')
-                ON CONFLICT (run_id) DO UPDATE SET
-                    status = excluded.status,
-                    current_step = excluded.current_step,
-                    error_type = NULL
+                ON CONFLICT (run_id) DO NOTHING
                 """,
                 (run_id, incident_id),
             )
 
-    def record_step(self, run_id: str, step: str) -> None:
+    def claim_run(
+        self,
+        *,
+        run_id: str,
+        execution_token: str,
+        resumed_from: str,
+        lease_seconds: int,
+    ) -> bool:
+        lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
         with self._connection() as connection:
             connection.execute(
-                "UPDATE deja_runs SET current_step = %s WHERE run_id = %s",
-                (step, run_id),
+                """
+                UPDATE deja_run_attempts
+                SET status = 'lease_expired', finished_at = now()
+                WHERE run_id = %s AND status = 'running'
+                  AND execution_token != %s
+                  AND EXISTS (
+                      SELECT 1
+                      FROM deja_runs
+                      WHERE run_id = %s
+                        AND (
+                            execution_token IS NULL
+                            OR lease_expires_at IS NULL
+                            OR lease_expires_at <= now()
+                        )
+                  )
+                """,
+                (run_id, execution_token, run_id),
             )
+            claimed = connection.execute(
+                """
+                UPDATE deja_runs
+                SET status = 'running',
+                    attempt_count = attempt_count + 1,
+                    execution_token = %s,
+                    lease_expires_at = %s,
+                    last_resume_from = %s,
+                    error_type = NULL
+                WHERE run_id = %s
+                  AND (
+                      execution_token IS NULL
+                      OR lease_expires_at IS NULL
+                      OR lease_expires_at <= now()
+                  )
+                RETURNING attempt_count
+                """,
+                (
+                    execution_token,
+                    lease_expires_at,
+                    resumed_from,
+                    run_id,
+                ),
+            ).fetchone()
+            if claimed is None:
+                return False
+            connection.execute(
+                """
+                INSERT INTO deja_run_attempts (
+                    execution_token, run_id, attempt_number, resumed_from, status
+                ) VALUES (%s, %s, %s, %s, 'running')
+                ON CONFLICT (execution_token) DO NOTHING
+                """,
+                (
+                    execution_token,
+                    run_id,
+                    claimed["attempt_count"],
+                    resumed_from,
+                ),
+            )
+        return True
+
+    def renew_run_claim(
+        self,
+        *,
+        run_id: str,
+        execution_token: str,
+        step: str,
+        lease_seconds: int,
+    ) -> bool:
+        lease_expires_at = datetime.now(UTC) + timedelta(seconds=lease_seconds)
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                UPDATE deja_runs
+                SET current_step = %s, lease_expires_at = %s
+                WHERE run_id = %s AND execution_token = %s
+                RETURNING run_id
+                """,
+                (step, lease_expires_at, run_id, execution_token),
+            ).fetchone()
+        return row is not None
+
+    def finish_run_attempt(self, execution_token: str) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE deja_run_attempts
+                SET status = 'completed', finished_at = now()
+                WHERE execution_token = %s AND status = 'running'
+                """,
+                (execution_token,),
+            )
+            connection.execute(
+                """
+                UPDATE deja_runs
+                SET execution_token = NULL, lease_expires_at = NULL
+                WHERE execution_token = %s
+                """,
+                (execution_token,),
+            )
+
+    def get_node_effect(self, run_id: str, node_name: str) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT result
+                FROM deja_node_effects
+                WHERE run_id = %s AND node_name = %s
+                """,
+                (run_id, node_name),
+            ).fetchone()
+        return row["result"] if row else None
+
+    def record_node_effect(
+        self,
+        run_id: str,
+        node_name: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO deja_node_effects (run_id, node_name, result)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (run_id, node_name) DO NOTHING
+                """,
+                (run_id, node_name, Jsonb(result)),
+            )
+            row = connection.execute(
+                """
+                SELECT result
+                FROM deja_node_effects
+                WHERE run_id = %s AND node_name = %s
+                """,
+                (run_id, node_name),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("node effect did not persist")
+        return row["result"]
+
+    def claim_chaos_injection(self, run_id: str, before_node: str) -> bool:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                INSERT INTO deja_chaos_injections (run_id, before_node)
+                VALUES (%s, %s)
+                ON CONFLICT (run_id, before_node) DO NOTHING
+                RETURNING run_id
+                """,
+                (run_id, before_node),
+            ).fetchone()
+        return row is not None
 
     def record_diagnosis(
         self,
@@ -522,15 +767,37 @@ class IncidentRepository:
                 (run_id,),
             )
 
-    def fail_run(self, run_id: str, error_type: str) -> None:
+    def fail_run(
+        self,
+        run_id: str,
+        error_type: str,
+        execution_token: str | None = None,
+    ) -> None:
         with self._connection() as connection:
+            if execution_token is not None:
+                connection.execute(
+                    """
+                    UPDATE deja_run_attempts
+                    SET status = 'failed', error_type = %s, finished_at = now()
+                    WHERE execution_token = %s AND status = 'running'
+                    """,
+                    (error_type[:100], execution_token),
+                )
+            token_clause = "AND execution_token = %s" if execution_token else ""
+            parameters: tuple[Any, ...] = (
+                (error_type[:100], run_id, execution_token)
+                if execution_token
+                else (error_type[:100], run_id)
+            )
             connection.execute(
                 """
                 UPDATE deja_runs
-                SET status = 'failed', error_type = %s
+                SET status = 'failed', error_type = %s,
+                    execution_token = NULL, lease_expires_at = NULL
                 WHERE run_id = %s
-                """,
-                (error_type[:100], run_id),
+                """
+                + token_clause,
+                parameters,
             )
 
     def get_run(self, run_id: str) -> RunRecord | None:
@@ -545,6 +812,9 @@ class IncidentRepository:
                     i.alert_type,
                     i.severity,
                     r.status,
+                    r.current_step,
+                    r.attempt_count,
+                    r.last_resume_from,
                     i.triage,
                     i.action_outcome,
                     p.summary AS postmortem,
@@ -565,3 +835,22 @@ class IncidentRepository:
                 (run_id,),
             ).fetchone()
         return RunRecord.model_validate(row) if row else None
+
+    def get_run_attempts(self, run_id: str) -> list[RunAttemptRecord]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    attempt_number,
+                    resumed_from,
+                    status,
+                    started_at::STRING AS started_at,
+                    finished_at::STRING AS finished_at,
+                    error_type
+                FROM deja_run_attempts
+                WHERE run_id = %s
+                ORDER BY attempt_number
+                """,
+                (run_id,),
+            ).fetchall()
+        return [RunAttemptRecord.model_validate(row) for row in rows]

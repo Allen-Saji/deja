@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from deja.models import Alert, NoiseStatus, Precedent, TriageDecision
+from deja.models import Alert, NoiseStatus, Precedent, RunExecutionEvent, TriageDecision
 from deja.workflow import IncidentService, build_graph
 
 
@@ -13,6 +13,11 @@ class FakeRepository:
         self.completed: dict[str, Any] | None = None
         self.failed: tuple[str, str] | None = None
         self.diagnosis: dict[str, Any] | None = None
+        self.effects: dict[tuple[str, str], dict[str, Any]] = {}
+        self.reservations: list[str] = []
+        self.attempts: list[tuple[str, str]] = []
+        self.node_starts: list[str] = []
+        self.begin_count = 0
 
     def setup_schema(self) -> None:
         pass
@@ -23,11 +28,32 @@ class FakeRepository:
     def completed_incident_ids(self, incident_ids: list[str]) -> set[str]:
         return set(incident_ids)
 
-    def begin_run(self, **_kwargs) -> None:
-        self.steps.append("ingest")
+    def reserve_run(self, **kwargs) -> None:
+        self.reservations.append(kwargs["run_id"])
 
-    def record_step(self, _run_id: str, step: str) -> None:
-        self.steps.append(step)
+    def begin_run(self, **_kwargs) -> None:
+        self.begin_count += 1
+
+    def claim_run(self, **kwargs) -> bool:
+        self.attempts.append((kwargs["execution_token"], kwargs["resumed_from"]))
+        return True
+
+    def renew_run_claim(self, **kwargs) -> bool:
+        self.steps.append(kwargs["step"])
+        self.node_starts.append(kwargs["step"])
+        return True
+
+    def finish_run_attempt(self, _execution_token: str) -> None:
+        pass
+
+    def get_node_effect(self, run_id: str, node_name: str):
+        return self.effects.get((run_id, node_name))
+
+    def record_node_effect(self, run_id: str, node_name: str, result):
+        return self.effects.setdefault((run_id, node_name), result)
+
+    def claim_chaos_injection(self, _run_id: str, _before_node: str) -> bool:
+        return True
 
     def record_diagnosis(self, **kwargs) -> None:
         self.diagnosis = kwargs
@@ -50,7 +76,12 @@ class FakeRepository:
     def complete_run(self, **kwargs) -> None:
         self.completed = kwargs
 
-    def fail_run(self, run_id: str, error_type: str) -> None:
+    def fail_run(
+        self,
+        run_id: str,
+        error_type: str,
+        _execution_token: str | None = None,
+    ) -> None:
         self.failed = (run_id, error_type)
 
     def get_run(self, run_id: str) -> str:
@@ -252,3 +283,65 @@ def test_service_runs_graph_and_records_failures(monkeypatch) -> None:
 
     assert failing_repository.failed is not None
     assert failing_repository.failed[1] == "RuntimeError"
+
+
+def test_failed_run_resumes_from_checkpoint_without_repeating_completed_nodes(
+    monkeypatch,
+) -> None:
+    saver_context = SaverContext()
+    monkeypatch.setattr(
+        "deja.workflow.CockroachDBSaver.from_conn_string",
+        lambda _url: saver_context,
+    )
+    repository = FakeRepository()
+    memory = FakeMemory()
+    service = IncidentService(
+        database_url="postgresql://unused",
+        repository=repository,
+        triager=FakeTriager(),
+        memory=memory,
+    )
+    alert = Alert(
+        service="payments-api",
+        alert_type="http-500-spike",
+        severity="critical",
+        message="500 rate rose after deploy",
+    )
+    event = RunExecutionEvent(
+        run_id="RUN-A1B2C3D4E5F6",
+        incident_id="INC-A1B2C3D4E5F6",
+        fingerprint=alert.fingerprint(),
+        alert=alert,
+        started_at_epoch_ns=1,
+    )
+    crashed = False
+
+    def crash_once(_run_id: str, before_node: str) -> None:
+        nonlocal crashed
+        if before_node == "triage" and not crashed:
+            crashed = True
+            raise RuntimeError("injected crash")
+
+    with pytest.raises(RuntimeError, match="injected crash"):
+        service.execute_run(
+            event,
+            execution_token="ATTEMPT-ONE",
+            failure_hook=crash_once,
+        )
+
+    result = service.execute_run(
+        event,
+        execution_token="ATTEMPT-TWO",
+        failure_hook=crash_once,
+    )
+
+    assert result is not None
+    assert result.status == "completed"
+    assert repository.attempts == [
+        ("ATTEMPT-ONE", "ingest"),
+        ("ATTEMPT-TWO", "triage"),
+    ]
+    assert repository.begin_count == 1
+    assert repository.node_starts.count("ingest") == 1
+    assert repository.node_starts.count("recall") == 1
+    assert repository.node_starts.count("triage") == 2

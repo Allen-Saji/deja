@@ -25,6 +25,8 @@ class Settings:
     voyage_api_key: str = field(repr=False)
     groq_model: str = "llama-3.3-70b-versatile"
     voyage_model: str = "voyage-4-lite"
+    execution_lease_seconds: int = 90
+    chaos_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -51,4 +53,10 @@ class Settings:
             voyage_api_key=voyage_api_key,
             groq_model=os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
             voyage_model=os.environ.get("VOYAGE_MODEL", "voyage-4-lite").strip(),
+            execution_lease_seconds=max(
+                30,
+                int(os.environ.get("EXECUTION_LEASE_SECONDS", "90")),
+            ),
+            chaos_enabled=os.environ.get("DEJA_CHAOS_ENABLED", "").strip().lower()
+            in {"1", "true", "yes"},
         )

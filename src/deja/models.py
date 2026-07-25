@@ -5,9 +5,10 @@ import json
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Severity = Literal["info", "warning", "critical"]
+WorkflowNode = Literal["ingest", "recall", "triage", "act", "writeback"]
 IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
@@ -135,6 +136,39 @@ class RunbookOutcome(BaseModel):
     succeeded: bool
 
 
+class ChaosSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["timeout_once"]
+    before_node: WorkflowNode
+
+
+class RunExecutionEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    event_type: Literal["deja.run.execute"] = "deja.run.execute"
+    run_id: str = Field(pattern=r"^RUN-[A-F0-9]{12}$")
+    incident_id: str = Field(pattern=r"^INC-[A-F0-9]{12}$")
+    fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    alert: Alert
+    started_at_epoch_ns: int = Field(gt=0)
+    chaos: ChaosSpec | None = None
+
+    @model_validator(mode="after")
+    def validate_fingerprint(self) -> RunExecutionEvent:
+        if self.fingerprint != self.alert.fingerprint():
+            raise ValueError("event fingerprint does not match alert")
+        return self
+
+
+class RunAccepted(BaseModel):
+    run_id: str
+    incident_id: str
+    status: Literal["queued"]
+    status_url: str
+
+
 class RunResult(BaseModel):
     run_id: str
     incident_id: str
@@ -158,6 +192,9 @@ class RunRecord(BaseModel):
     alert_type: str
     severity: Severity
     status: str
+    current_step: str
+    attempt_count: int = Field(ge=0)
+    last_resume_from: str | None = None
     triage: dict[str, Any] | None = None
     action_outcome: str | None = None
     postmortem: str | None = None
@@ -167,3 +204,12 @@ class RunRecord(BaseModel):
     selected_runbook_id: str | None = None
     started_at: str
     completed_at: str | None = None
+
+
+class RunAttemptRecord(BaseModel):
+    attempt_number: int = Field(ge=1)
+    resumed_from: str
+    status: str
+    started_at: str
+    finished_at: str | None = None
+    error_type: str | None = None

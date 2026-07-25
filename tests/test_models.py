@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from deja.models import Alert, RunbookCreate
+from deja.models import Alert, RunbookCreate, RunExecutionEvent
 
 
 def test_fingerprint_is_stable_across_label_order() -> None:
@@ -75,3 +75,21 @@ def test_runbooks_reject_blank_text(field: str) -> None:
 
     with pytest.raises(ValidationError, match="cannot be blank"):
         RunbookCreate.model_validate(payload)
+
+
+def test_execution_event_rejects_alert_fingerprint_mismatch() -> None:
+    alert = Alert(
+        service="payments-api",
+        alert_type="http-500-spike",
+        severity="critical",
+        message="500 rate rose after deploy",
+    )
+
+    with pytest.raises(ValidationError, match="fingerprint does not match"):
+        RunExecutionEvent(
+            run_id="RUN-A1B2C3D4E5F6",
+            incident_id="INC-A1B2C3D4E5F6",
+            fingerprint="a" * 64,
+            alert=alert,
+            started_at_epoch_ns=1,
+        )
