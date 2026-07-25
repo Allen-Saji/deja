@@ -1,0 +1,61 @@
+name: deja-p3-chaos
+
+services:
+  crdb-1:
+    image: cockroachdb/cockroach:v26.2.3
+    command:
+      - start
+      - --insecure
+      - --listen-addr=crdb-1:26357
+      - --advertise-addr=crdb-1:26357
+      - --sql-addr=crdb-1:26257
+      - --advertise-sql-addr=crdb-1:26257
+      - --http-addr=crdb-1:8080
+      - --join=crdb-1:26357,crdb-2:26357,crdb-3:26357
+      - --cache=128MiB
+      - --max-sql-memory=128MiB
+    hostname: crdb-1
+    ports:
+      - "26258:26257"
+      - "8081:8080"
+    volumes:
+      - deja-p3-crdb-1:/cockroach/cockroach-data
+
+  crdb-2:
+    image: cockroachdb/cockroach:v26.2.3
+    command:
+      - start
+      - --insecure
+      - --listen-addr=crdb-2:26357
+      - --advertise-addr=crdb-2:26357
+      - --sql-addr=crdb-2:26257
+      - --advertise-sql-addr=crdb-2:26257
+      - --http-addr=crdb-2:8080
+      - --join=crdb-1:26357,crdb-2:26357,crdb-3:26357
+      - --cache=128MiB
+      - --max-sql-memory=128MiB
+    hostname: crdb-2
+    volumes:
+      - deja-p3-crdb-2:/cockroach/cockroach-data
+
+  crdb-3:
+    image: cockroachdb/cockroach:v26.2.3
+    command:
+      - start
+      - --insecure
+      - --listen-addr=crdb-3:26357
+      - --advertise-addr=crdb-3:26357
+      - --sql-addr=crdb-3:26257
+      - --advertise-sql-addr=crdb-3:26257
+      - --http-addr=crdb-3:8080
+      - --join=crdb-1:26357,crdb-2:26357,crdb-3:26357
+      - --cache=128MiB
+      - --max-sql-memory=128MiB
+    hostname: crdb-3
+    volumes:
+      - deja-p3-crdb-3:/cockroach/cockroach-data
+
+volumes:
+  deja-p3-crdb-1:
+  deja-p3-crdb-2:
+  deja-p3-crdb-3:
