@@ -35,7 +35,7 @@ for command in aws docker git; do
 done
 
 ACCOUNT_ID="$(AWS_PROFILE="$AWS_PROFILE" aws sts get-caller-identity --query Account --output text)"
-IMAGE_TAG="p3-$(date -u +%Y%m%d%H%M%S)"
+IMAGE_TAG="p4-$(date -u +%Y%m%d%H%M%S)"
 IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG"
 
 if ! AWS_PROFILE="$AWS_PROFILE" aws ecr describe-repositories \

@@ -5,9 +5,11 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.vercel/
 .ruff_cache/
 .coverage
 build/
 dist/
 *.egg-info/
 spikes/s3_ingest_runs.log
+.gstack/
