@@ -28,11 +28,24 @@ CockroachDB supports three kinds of memory:
 The `act` node remains inside a strict safety boundary. It may suppress a duplicate notification
 or recommend a runbook, but it never changes infrastructure and never skips incident processing.
 
+A separate Next.js dashboard reads the operational ledger through a dedicated CockroachDB
+principal. That principal has `SELECT` on the nine dashboard tables and no write privileges. The
+browser receives only a sanitized snapshot; it never receives a database URL, AWS credential, or
+provider key.
+
 ## Status
 
-P3 durable execution, deployment, and live chaos acceptance completed on July 25, 2026.
+P4 observability, dashboard deployment, and CockroachDB Managed MCP verification completed on
+July 26, 2026.
 
 - Real alert-to-postmortem workflow deployed to AWS Lambda in `ap-south-1`
+- Public read-only dashboard deployed to Vercel in `bom1`
+- Incident feed, node and attempt trace, learning curve, noise ledger, and runbook leaderboard
+- Structured JSON logs for alert acceptance, execution boundaries, and every workflow node
+- Dashboard database principal is limited to `SELECT` on nine exact tables
+- Codex MCP OAuth is scoped to the Deja cluster with read-only permission; a live `select_query`
+  returned 37 runs and 34 completed runs
+- Browser and snapshot responses contain no database or provider credentials
 - IAM-protected Function URL live
 - `POST /alerts` reserves stable run identity and returns HTTP 202
 - Lambda self-invocation uses asynchronous delivery with two configured retries
@@ -48,7 +61,7 @@ P3 durable execution, deployment, and live chaos acceptance completed on July 25
 - Triage citations are checked against the incidents returned by recall
 - Three stable non-critical, non-escalated observations suppress only duplicate notifications
 - Runbooks use Laplace-smoothed efficacy scores from recorded success and failure outcomes
-- Lambda runs ECR image `p3-20260725052057`
+- Lambda runs ECR image `p4-20260726083936`
 
 The live timeout acceptance forced `RUN-591F981A5EDB` to exceed Lambda's 90-second limit before
 triage. Attempt 1 expired; AWS retried the same event; attempt 2 resumed from the saved `triage`
@@ -56,6 +69,34 @@ checkpoint and completed in 2.966 seconds. The local three-node CockroachDB scen
 before triage and completed all five graph nodes through the remaining quorum. A final normal
 signed Function URL request queued and completed `RUN-E1D6DD5025E8`, proving the non-chaos path
 after the warm-runtime regression fix.
+
+The P4 production verification run `RUN-3E482889BBA4` completed all five nodes in 4.334 seconds.
+CloudWatch recorded JSON events from `alert.accepted` through `run.execution.finished`. The public
+dashboard returned HTTP 200, loaded 37 durable runs, and served a warm snapshot in 0.158 seconds
+during acceptance.
+
+## Dashboard
+
+Production: [deja-khaki.vercel.app](https://deja-khaki.vercel.app)
+
+The dashboard is intentionally read-only. It queries CockroachDB from the Next.js server boundary,
+auto-refreshes every 30 seconds, and exposes no mutation endpoint.
+
+```sh
+cd dashboard
+cp .env.example .env.local
+# Set DEJA_DATABASE_URL to a read-only CockroachDB connection.
+npm install
+npm run check
+npm run dev
+```
+
+Vercel functions are pinned to `bom1` so execution is colocated with the Mumbai CockroachDB
+cluster. The global `pg` pool is attached to Vercel's function lifecycle to release idle
+connections correctly.
+
+Read-only SQL and Managed MCP evidence are documented in
+[`docs/observability/read-only-access.md`](docs/observability/read-only-access.md).
 
 ## API
 
