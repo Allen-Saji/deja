@@ -1,0 +1,6 @@
+[mcp_servers.cockroachdb-cloud]
+url = "https://cockroachlabs.cloud/mcp"
+auth = "oauth"
+http_headers = { "mcp-cluster-id" = "5a3ce252-b13e-4682-960c-3c66694cca09" }
+default_tools_approval_mode = "writes"
+enabled = true
