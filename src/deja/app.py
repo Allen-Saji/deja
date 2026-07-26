@@ -21,8 +21,9 @@ from deja.models import (
     RunExecutionEvent,
     RunRecord,
 )
+from deja.observability import configure_json_logging, log_event
 
-logger = logging.getLogger("deja")
+logger = configure_json_logging()
 app = FastAPI(title="Deja", version="0.1.0")
 
 
@@ -71,7 +72,7 @@ DispatcherDependency = Annotated[Any, Depends(get_dispatcher)]
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "deja", "phase": "p3"}
+    return {"status": "ok", "service": "deja", "phase": "p4"}
 
 
 @app.get("/ready")
@@ -79,7 +80,12 @@ def ready(service: ServiceDependency) -> dict[str, str]:
     try:
         service.readiness()
     except Exception as error:
-        logger.error("readiness failed with %s", type(error).__name__)
+        log_event(
+            logger,
+            "readiness.failed",
+            level=logging.ERROR,
+            error_type=type(error).__name__,
+        )
         raise HTTPException(status_code=503, detail="service is not ready") from None
     return {"status": "ready"}
 
@@ -98,14 +104,36 @@ def submit_alert(
     try:
         accepted, event = service.prepare_alert(alert)
         dispatcher.dispatch(event)
+        log_event(
+            logger,
+            "alert.accepted",
+            run_id=accepted.run_id,
+            incident_id=accepted.incident_id,
+            service=alert.service,
+            alert_type=alert.alert_type,
+            status=accepted.status,
+        )
         return accepted
     except Exception as error:
         if accepted is not None:
             try:
                 service.fail_dispatch(accepted.run_id, type(error).__name__)
             except Exception:
-                logger.error("dispatch failure persistence also failed")
-        logger.error("incident processing failed with %s", type(error).__name__)
+                log_event(
+                    logger,
+                    "alert.dispatch_failure_persistence.failed",
+                    level=logging.ERROR,
+                    run_id=accepted.run_id,
+                )
+        log_event(
+            logger,
+            "alert.processing.failed",
+            level=logging.ERROR,
+            run_id=accepted.run_id if accepted else None,
+            service=alert.service,
+            alert_type=alert.alert_type,
+            error_type=type(error).__name__,
+        )
         raise HTTPException(status_code=500, detail="incident processing failed") from None
 
 
@@ -114,7 +142,13 @@ def get_run(run_id: str, service: ServiceDependency) -> RunRecord:
     try:
         record = service.get_run(run_id)
     except Exception as error:
-        logger.error("run lookup failed with %s", type(error).__name__)
+        log_event(
+            logger,
+            "run.lookup.failed",
+            level=logging.ERROR,
+            run_id=run_id,
+            error_type=type(error).__name__,
+        )
         raise HTTPException(status_code=500, detail="run lookup failed") from None
     if record is None:
         raise HTTPException(status_code=404, detail="run not found")
@@ -129,7 +163,13 @@ def get_run_attempts(
     try:
         attempts = service.get_run_attempts(run_id)
     except Exception as error:
-        logger.error("run attempt lookup failed with %s", type(error).__name__)
+        log_event(
+            logger,
+            "run.attempt_lookup.failed",
+            level=logging.ERROR,
+            run_id=run_id,
+            error_type=type(error).__name__,
+        )
         raise HTTPException(status_code=500, detail="run attempt lookup failed") from None
     if not attempts and service.get_run(run_id) is None:
         raise HTTPException(status_code=404, detail="run not found")
@@ -144,7 +184,14 @@ def create_runbook(
     try:
         return service.create_runbook(definition)
     except Exception as error:
-        logger.error("runbook write failed with %s", type(error).__name__)
+        log_event(
+            logger,
+            "runbook.write.failed",
+            level=logging.ERROR,
+            service=definition.service,
+            alert_type=definition.alert_type,
+            error_type=type(error).__name__,
+        )
         raise HTTPException(status_code=500, detail="runbook write failed") from None
 
 
@@ -157,7 +204,13 @@ def record_runbook_outcome(
     try:
         score = service.record_runbook_outcome(run_id, outcome.succeeded)
     except Exception as error:
-        logger.error("runbook outcome write failed with %s", type(error).__name__)
+        log_event(
+            logger,
+            "runbook.outcome.failed",
+            level=logging.ERROR,
+            run_id=run_id,
+            error_type=type(error).__name__,
+        )
         raise HTTPException(status_code=500, detail="runbook outcome write failed") from None
     if score is None:
         raise HTTPException(status_code=404, detail="runbook selection not found")
@@ -166,7 +219,12 @@ def record_runbook_outcome(
 
 @app.exception_handler(Exception)
 async def opaque_error_handler(_request, error: Exception) -> JSONResponse:
-    logger.error("request failed with %s", type(error).__name__)
+    log_event(
+        logger,
+        "request.failed",
+        level=logging.ERROR,
+        error_type=type(error).__name__,
+    )
     return JSONResponse(status_code=500, content={"detail": "incident processing failed"})
 
 
@@ -188,6 +246,14 @@ def handler(event: Any, context: Any) -> Any:
         return mangum_handler(event, context)
 
     execution_event = RunExecutionEvent.model_validate(event)
+    log_event(
+        logger,
+        "run.execution.started",
+        run_id=execution_event.run_id,
+        incident_id=execution_event.incident_id,
+        service=execution_event.alert.service,
+        alert_type=execution_event.alert.alert_type,
+    )
     service = get_service()
     settings = Settings.from_env()
     failure_hook = TimeoutOnceInjector(
@@ -200,6 +266,14 @@ def handler(event: Any, context: Any) -> Any:
         execution_event,
         execution_token=f"{context.aws_request_id}-{uuid.uuid4().hex}",
         failure_hook=failure_hook,
+    )
+    log_event(
+        logger,
+        "run.execution.finished",
+        run_id=execution_event.run_id,
+        incident_id=execution_event.incident_id,
+        status=result.status if result else "duplicate_in_flight",
+        precedent_count=len(result.precedents) if result else 0,
     )
     return {
         "run_id": execution_event.run_id,

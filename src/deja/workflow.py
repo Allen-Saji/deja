@@ -21,8 +21,11 @@ from deja.models import (
     RunResult,
     TriageDecision,
 )
+from deja.observability import configure_json_logging, log_event
 from deja.repository import IncidentRepository
 from deja.triage import Triager
+
+logger = configure_json_logging()
 
 
 class IncidentState(TypedDict, total=False):
@@ -57,6 +60,13 @@ def build_graph(
     failure_hook: Callable[[str, str], None] | None = None,
 ) -> Any:
     def before_node(state: IncidentState, node_name: str) -> None:
+        log_event(
+            logger,
+            "workflow.node.started",
+            run_id=state["run_id"],
+            incident_id=state["incident_id"],
+            node=node_name,
+        )
         if execution_token is not None and not repository.renew_run_claim(
             run_id=state["run_id"],
             execution_token=execution_token,
@@ -81,6 +91,14 @@ def build_graph(
                 node_name,
                 compute(),
             )
+        )
+        log_event(
+            logger,
+            "workflow.node.completed",
+            run_id=state["run_id"],
+            incident_id=state["incident_id"],
+            node=node_name,
+            status="replayed" if existing is not None else "applied",
         )
         return {**result, "steps": [*state.get("steps", []), node_name]}
 
