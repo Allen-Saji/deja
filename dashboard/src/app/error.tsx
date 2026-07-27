@@ -9,18 +9,25 @@ export default function ErrorPage({
   reset: () => void;
 }) {
   return (
-    <main className="error-shell">
-      <p className="eyebrow">DEJA / MEMORY OPERATIONS</p>
-      <div className="error-code">503</div>
-      <h1>The incident ledger did not answer.</h1>
-      <p>
-        The dashboard remains read-only. No backend action was attempted and no incident state
-        was changed.
-      </p>
-      <button type="button" onClick={reset} className="primary-button">
-        <RotateCcw size={16} aria-hidden="true" />
-        Retry connection
-      </button>
+    <main className="console-state-shell">
+      <div className="state-wordmark">
+        <span className="wordmark-glyph" aria-hidden="true">
+          d
+        </span>
+        <span>deja</span>
+      </div>
+      <section className="state-card error-state">
+        <p className="state-kicker">Connection unavailable / 503</p>
+        <h1>The incident ledger did not answer.</h1>
+        <p>
+          The console remains read-only. No backend action was attempted and no incident state
+          changed.
+        </p>
+        <button type="button" onClick={reset} className="state-action">
+          <RotateCcw size={15} aria-hidden="true" />
+          Retry connection
+        </button>
+      </section>
     </main>
   );
 }

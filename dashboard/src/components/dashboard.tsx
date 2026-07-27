@@ -2,17 +2,15 @@
 
 import {
   Activity,
+  ArrowRight,
   BookOpenCheck,
   BrainCircuit,
   Check,
   CircleDashed,
   Clock3,
-  CloudCog,
-  Database,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
-  Siren,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -24,6 +22,7 @@ import {
   formatTimestamp,
   humanize,
 } from "@/lib/format";
+import { bestReplayImprovement } from "@/lib/snapshot";
 import type {
   DashboardSnapshot,
   IncidentRun,
@@ -48,8 +47,11 @@ function Stat({
 }) {
   return (
     <div className="stat">
-      <span>{label}</span>
-      <strong>{value}</strong>
+      <span className="stat-label">{label}</span>
+      <div className="stat-value-row">
+        <strong>{value}</strong>
+        <ArrowRight size={14} aria-hidden="true" />
+      </div>
       <small>{detail}</small>
     </div>
   );
@@ -62,7 +64,7 @@ function RunTimeline({ run }: { run: IncidentRun }) {
   return (
     <div className="timeline-block">
       <div className="timeline-head">
-        <span>EXECUTION TRACE</span>
+        <span>Execution trace</span>
         <span>
           {run.attemptCount || 1} attempt{(run.attemptCount || 1) === 1 ? "" : "s"}
         </span>
@@ -77,7 +79,11 @@ function RunTimeline({ run }: { run: IncidentRun }) {
           const active =
             (run.status === "running" || run.status === "queued") && run.currentStep === node;
           return (
-            <div className="trace-segment" key={node}>
+            <div
+              className="trace-segment"
+              key={node}
+              style={{ "--trace-index": index } as React.CSSProperties}
+            >
               <div
                 className={`trace-node ${complete ? "complete" : ""} ${failed ? "failed" : ""} ${active ? "active" : ""}`}
               >
@@ -122,34 +128,72 @@ function RunDetail({ run }: { run: IncidentRun }) {
       : "Diagnosis pending.");
 
   return (
-    <article className="run-detail">
+    <article className="run-detail" key={run.runId}>
       <div className="run-detail-head">
         <div>
-          <p className="eyebrow">SELECTED RECORD / {run.incidentId}</p>
+          <p className="detail-status">
+            <StatusDot status={run.status} />
+            {humanize(run.status)}
+            <span>{run.incidentId}</span>
+          </p>
           <h2>{run.service}</h2>
-          <p>{run.alertType}</p>
+          <p className="detail-signal">{run.alertType}</p>
         </div>
         <div className={`severity-stamp severity-${run.severity}`}>{run.severity}</div>
       </div>
       <p className="alert-message">{run.message}</p>
       <RunTimeline run={run} />
-      <div className="diagnosis-grid">
-        <div>
-          <span>DIAGNOSIS</span>
+      <div className="incident-story">
+        <section className="diagnosis-copy" aria-labelledby="diagnosis-title">
+          <span id="diagnosis-title">Diagnosis</span>
           <p>{diagnosis}</p>
-        </div>
-        <div>
-          <span>ACTION BOUNDARY</span>
-          <p>{humanize(run.actionOutcome)}</p>
-        </div>
+          <div className="action-boundary">
+            <ShieldCheck size={16} aria-hidden="true" />
+            <div>
+              <strong>Advisory boundary</strong>
+              <p>
+                {humanize(run.actionOutcome)}. Deja records evidence and never changes
+                infrastructure.
+              </p>
+            </div>
+          </div>
+        </section>
+        <aside className="memory-trail" aria-label="Memory trail">
+          <div className="memory-trail-heading">
+            <span>Memory trail</span>
+            <BrainCircuit size={16} aria-hidden="true" />
+          </div>
+          {[
+            ["Current alert", run.alertType],
+            [
+              "Recalled precedent",
+              run.precedentIds.length > 0
+                ? run.precedentIds.map(compactIdentifier).join(", ")
+                : "Novel incident",
+            ],
+            ["Diagnosis", run.triage ? "Validated" : "Pending"],
+            ["Recommendation", run.selectedRunbookName ?? "No runbook match"],
+            ["Operator outcome", humanize(run.actionOutcome)],
+          ].map(([label, value], index) => (
+            <div
+              className="memory-step"
+              key={label}
+              style={{ "--memory-index": index } as React.CSSProperties}
+            >
+              <i aria-hidden="true" />
+              <span>{label}</span>
+              <strong>{value}</strong>
+            </div>
+          ))}
+        </aside>
       </div>
       <div className="evidence-strip">
         <div>
-          <span>TIME TO DIAGNOSE</span>
+          <span>Time to diagnose</span>
           <strong>{formatDuration(run.diagnosisMs)}</strong>
         </div>
         <div>
-          <span>PRECEDENT EVIDENCE</span>
+          <span>Precedent evidence</span>
           <strong>
             {run.precedentIds.length > 0
               ? run.precedentIds.map(compactIdentifier).join(", ")
@@ -157,7 +201,7 @@ function RunDetail({ run }: { run: IncidentRun }) {
           </strong>
         </div>
         <div>
-          <span>RUNBOOK</span>
+          <span>Runbook</span>
           <strong>{run.selectedRunbookName ?? "No match"}</strong>
         </div>
       </div>
@@ -178,19 +222,20 @@ function IncidentFeed({
     <section className="panel feed-panel" aria-labelledby="feed-title">
       <div className="panel-heading compact">
         <div>
-          <p className="eyebrow">DURABLE LEDGER / LATEST 50</p>
-          <h2 id="feed-title">Incident feed</h2>
+          <p className="eyebrow">Durable ledger</p>
+          <h2 id="feed-title">Recent runs</h2>
         </div>
-        <span className="record-count">{runs.length} records loaded</span>
+        <span className="record-count">{runs.length} loaded</span>
       </div>
       <div className="incident-list">
-        {runs.map((run) => (
+        {runs.map((run, index) => (
           <button
             type="button"
             className={`incident-row ${selectedRunId === run.runId ? "selected" : ""}`}
             key={run.runId}
             onClick={() => onSelect(run.runId)}
             aria-pressed={selectedRunId === run.runId}
+            style={{ "--row-index": Math.min(index, 9) } as React.CSSProperties}
           >
             <StatusDot status={run.status} />
             <span className="incident-service">
@@ -209,6 +254,7 @@ function IncidentFeed({
             </span>
             <span className="incident-time">{formatDuration(run.diagnosisMs)}</span>
             <time>{formatTimestamp(run.startedAt)}</time>
+            <ArrowRight className="incident-arrow" size={15} aria-hidden="true" />
           </button>
         ))}
       </div>
@@ -221,10 +267,10 @@ function NoiseTable({ ledgers }: { ledgers: NoiseLedger[] }) {
     <section className="panel noise-panel" aria-labelledby="noise-title">
       <div className="panel-heading compact">
         <div>
-          <p className="eyebrow">PROCEDURAL MEMORY / DUPLICATES</p>
+          <p className="eyebrow">Procedural memory</p>
           <h2 id="noise-title">Noise ledger</h2>
         </div>
-        <Siren size={22} strokeWidth={1.6} aria-hidden="true" />
+        <span className="panel-index">01</span>
       </div>
       <div className="table-wrap">
         <table>
@@ -264,10 +310,10 @@ function RunbookBoard({ runbooks }: { runbooks: Runbook[] }) {
     <section className="panel runbook-panel" aria-labelledby="runbook-title">
       <div className="panel-heading compact">
         <div>
-          <p className="eyebrow">PROCEDURAL MEMORY / OUTCOMES</p>
-          <h2 id="runbook-title">Runbook leaderboard</h2>
+          <p className="eyebrow">Outcome evidence</p>
+          <h2 id="runbook-title">Runbook performance</h2>
         </div>
-        <BookOpenCheck size={22} strokeWidth={1.6} aria-hidden="true" />
+        <BookOpenCheck size={18} strokeWidth={1.7} aria-hidden="true" />
       </div>
       <div className="runbook-list">
         {runbooks.map((runbook, index) => (
@@ -306,6 +352,10 @@ export function Dashboard({
     () => snapshot.runs.find((run) => run.runId === selectedRunId) ?? snapshot.runs[0],
     [selectedRunId, snapshot.runs],
   );
+  const replayImprovement = useMemo(
+    () => bestReplayImprovement(snapshot.learningCurve),
+    [snapshot.learningCurve],
+  );
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -339,121 +389,141 @@ export function Dashboard({
   }, [refresh]);
 
   return (
-    <main>
-      <header className="masthead">
-        <div className="brand-lockup">
-          <div className="brand-mark">D</div>
-          <div>
-            <p>DEJA / MEMORY OPERATIONS</p>
-            <span>INCIDENT RESPONSE THAT REMEMBERS</span>
+    <div className="deja-app">
+      <header className="app-bar">
+        <div className="app-bar-inner">
+          <a className="wordmark" href="#overview" aria-label="Deja overview">
+            <span className="wordmark-glyph" aria-hidden="true">
+              d
+            </span>
+            <span>deja</span>
+          </a>
+          <nav className="primary-nav" aria-label="Primary navigation">
+            <a href="#overview">Overview</a>
+            <a className="active" href="#runs">
+              Runs
+            </a>
+            <a href="#memory">Memory</a>
+            <a href="#runbooks">Runbooks</a>
+          </nav>
+          <div className="app-actions">
+            <div className="live-cluster">
+              <span className="live-pulse" />
+              <span>Production</span>
+              <small>CRDB / Mumbai</small>
+            </div>
+            <button
+              type="button"
+              className="refresh-button"
+              onClick={refresh}
+              disabled={refreshing}
+            >
+              <RefreshCw size={15} className={refreshing ? "spin" : ""} aria-hidden="true" />
+              <span>{refreshing ? "Refreshing" : "Refresh"}</span>
+            </button>
           </div>
         </div>
-        <div className="live-cluster">
-          <span className="live-pulse" />
-          <div>
-            <strong>LIVE DATA</strong>
-            <small>CRDB CLOUD / MUMBAI</small>
-          </div>
-        </div>
-        <button type="button" className="refresh-button" onClick={refresh} disabled={refreshing}>
-          <RefreshCw size={15} className={refreshing ? "spin" : ""} aria-hidden="true" />
-          {refreshing ? "Refreshing" : "Refresh"}
-        </button>
       </header>
 
-      <section className="hero">
-        <div>
-          <p className="eyebrow">CONTROL SURFACE / P4</p>
-          <h1>
-            Every incident leaves
-            <br />
-            <em>a usable memory.</em>
-          </h1>
-        </div>
-        <div className="hero-copy">
-          <p>
-            Follow each alert from ingestion to postmortem. See which checkpoint survived, which
-            precedent shaped the diagnosis, and which operator outcome changed the next response.
-          </p>
-          <div className="system-rail" aria-label="System architecture status">
-            <span>
-              <CloudCog size={17} aria-hidden="true" /> AWS Lambda
-            </span>
-            <i />
-            <span>
-              <Database size={17} aria-hidden="true" /> CockroachDB
-            </span>
-            <i />
-            <span className={snapshot.mcpReadOnlyVerified ? "verified" : "pending"}>
-              <ShieldCheck size={17} aria-hidden="true" />
-              MCP {snapshot.mcpReadOnlyVerified ? "read only" : "auth pending"}
-            </span>
+      <main className="console-main">
+        <section className="console-intro" id="overview">
+          <div>
+            <p className="section-label">
+              <span className="live-pulse" />
+              Live operational memory
+            </p>
+            <h1>Incident memory</h1>
+            <p>
+              A durable record of what failed, what survived, and what the system learned for the
+              next response.
+            </p>
           </div>
-        </div>
-      </section>
-
-      {refreshError ? (
-        <div className="refresh-error" role="status">
-          <RotateCcw size={15} aria-hidden="true" />
-          Refresh failed. Showing the last verified snapshot.
-        </div>
-      ) : null}
-
-      <section className="stats-grid" aria-label="Operational summary">
-        <Stat
-          label="COMPLETED"
-          value={snapshot.metrics.completedRuns}
-          detail={`of ${snapshot.metrics.totalRuns} durable runs`}
-        />
-        <Stat
-          label="MEMORY ASSISTS"
-          value={snapshot.metrics.precedentAssistedRuns}
-          detail="validated precedent citations"
-        />
-        <Stat
-          label="NOISE MUTED"
-          value={snapshot.metrics.suppressedNotifications}
-          detail="processing still completed"
-        />
-        <Stat
-          label="RETRY RECOVERIES"
-          value={snapshot.metrics.recoveredRuns}
-          detail="checkpoint-resumed runs"
-        />
-      </section>
-
-      <section className="operations-grid">
-        <IncidentFeed
-          runs={snapshot.runs}
-          selectedRunId={selectedRun?.runId ?? ""}
-          onSelect={setSelectedRunId}
-        />
-        <section className="panel detail-panel" aria-label="Selected incident detail">
-          {selectedRun ? <RunDetail run={selectedRun} /> : <p>No incident records found.</p>}
+          <div className="trust-cluster" aria-label="System trust boundary">
+            <div>
+              <span>AWS Lambda</span>
+              <small>Execution</small>
+            </div>
+            <i aria-hidden="true" />
+            <div>
+              <span>CockroachDB</span>
+              <small>Durable memory</small>
+            </div>
+            <i aria-hidden="true" />
+            <div className={snapshot.mcpReadOnlyVerified ? "verified" : "pending"}>
+              <span>MCP</span>
+              <small>{snapshot.mcpReadOnlyVerified ? "Read only" : "Auth pending"}</small>
+            </div>
+          </div>
         </section>
-      </section>
 
-      <LearningCurve points={snapshot.learningCurve} />
+        {refreshError ? (
+          <div className="refresh-error" role="status">
+            <RotateCcw size={15} aria-hidden="true" />
+            Refresh failed. Showing the last verified snapshot.
+          </div>
+        ) : null}
 
-      <section className="memory-grid">
-        <NoiseTable ledgers={snapshot.noiseLedgers} />
-        <RunbookBoard runbooks={snapshot.runbooks} />
-      </section>
+        <section className="stats-grid" aria-label="Operational summary">
+          <Stat
+            label="Completed runs"
+            value={snapshot.metrics.completedRuns}
+            detail={`${snapshot.metrics.totalRuns} total durable runs`}
+          />
+          <Stat
+            label="Memory assisted"
+            value={snapshot.metrics.precedentAssistedRuns}
+            detail="validated citations"
+          />
+          <Stat
+            label="Retry recoveries"
+            value={snapshot.metrics.recoveredRuns}
+            detail="resumed from checkpoint"
+          />
+          <Stat
+            label="Best replay"
+            value={replayImprovement === null ? "N/A" : `${replayImprovement.toFixed(0)}%`}
+            detail="verified faster diagnosis"
+          />
+        </section>
 
-      <footer>
-        <div>
-          <Activity size={16} aria-hidden="true" />
-          <span>Snapshot {formatTimestamp(snapshot.generatedAt)} UTC</span>
+        <section className="operations-grid" id="runs">
+          <IncidentFeed
+            runs={snapshot.runs}
+            selectedRunId={selectedRun?.runId ?? ""}
+            onSelect={setSelectedRunId}
+          />
+          <section className="panel detail-panel" aria-label="Selected incident detail">
+            {selectedRun ? (
+              <RunDetail key={selectedRun.runId} run={selectedRun} />
+            ) : (
+              <p>No incident records found.</p>
+            )}
+          </section>
+        </section>
+
+        <div id="memory">
+          <LearningCurve points={snapshot.learningCurve} />
         </div>
-        <p>
-          Advisory only. Deja records recommendations and operator evidence but never changes
-          infrastructure.
-        </p>
-        <div>
-          <Clock3 size={16} aria-hidden="true" />
-          <span>Auto-refresh / 30s</span>
-        </div>
-      </footer>
-    </main>
+
+        <section className="memory-grid">
+          <NoiseTable ledgers={snapshot.noiseLedgers} />
+          <div id="runbooks">
+            <RunbookBoard runbooks={snapshot.runbooks} />
+          </div>
+        </section>
+
+        <footer>
+          <div>
+            <Activity size={16} aria-hidden="true" />
+            <span>Snapshot {formatTimestamp(snapshot.generatedAt)} UTC</span>
+          </div>
+          <p>Advisory only. Recommendations are recorded, never executed.</p>
+          <div>
+            <Clock3 size={16} aria-hidden="true" />
+            <span>Auto-refresh / 30s</span>
+          </div>
+        </footer>
+      </main>
+    </div>
   );
 }
