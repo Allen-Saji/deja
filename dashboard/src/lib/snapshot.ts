@@ -10,6 +10,21 @@ export function sanitizePublicText(value: string): string {
   return value.replace(/\bp([0-4])\b/gi, (_match, index: string) => RELEASE_NAMES[Number(index)]);
 }
 
+export function sanitizePublicValue<T>(value: T): T {
+  if (typeof value === "string") {
+    return sanitizePublicText(value) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizePublicValue(item)) as T;
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, sanitizePublicValue(item)]),
+    ) as T;
+  }
+  return value;
+}
+
 export function buildLearningCurve(runs: IncidentRun[]): LearningPoint[] {
   return runs
     .filter(

@@ -5,6 +5,7 @@ import {
   buildLearningCurve,
   metricsFromRow,
   sanitizePublicText,
+  sanitizePublicValue,
 } from "@/lib/snapshot";
 import type { IncidentRun } from "@/lib/types";
 
@@ -106,5 +107,30 @@ describe("dashboard snapshot transforms", () => {
     expect(sanitizePublicText(`Controlled ${shorthand.toUpperCase()} verification`)).toBe(
       "Controlled production verification",
     );
+  });
+
+  it("removes internal release shorthand from nested public snapshot values", () => {
+    const shorthand = ["P", "2"].join("");
+    const snapshot = {
+      runs: [
+        {
+          runId: `RUN-${shorthand}-ONE`,
+          incidentId: `INC-${shorthand}-ONE`,
+          triage: { cited_incident_ids: [`INC-${shorthand}-PRIOR`] },
+        },
+      ],
+      runbooks: [{ runbookId: `RB-${shorthand}-HIGH` }],
+    };
+
+    expect(sanitizePublicValue(snapshot)).toEqual({
+      runs: [
+        {
+          runId: "RUN-memory-ONE",
+          incidentId: "INC-memory-ONE",
+          triage: { cited_incident_ids: ["INC-memory-PRIOR"] },
+        },
+      ],
+      runbooks: [{ runbookId: "RB-memory-HIGH" }],
+    });
   });
 });

@@ -7,6 +7,7 @@ import {
   buildLearningCurve,
   metricsFromRow,
   sanitizePublicText,
+  sanitizePublicValue,
 } from "@/lib/snapshot";
 import type {
   DashboardSnapshot,
@@ -292,7 +293,7 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
     efficacyScore: asNumber(row.efficacy_score),
   }));
 
-  return {
+  return sanitizePublicValue({
     generatedAt: new Date().toISOString(),
     metrics: metricsFromRow(metricsResult.rows[0] ?? {}),
     runs,
@@ -301,5 +302,5 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
     runbooks,
     mcpReadOnlyVerified:
       process.env.DEJA_MCP_READONLY_VERIFIED?.trim().toLowerCase() === "true",
-  };
+  });
 }
