@@ -13,3 +13,8 @@ dist/
 *.egg-info/
 spikes/s3_ingest_runs.log
 .gstack/
+.agents/
+.codex/
+skills-lock.json
+docs/submission/
+docs/architecture/diagram-spec.yaml

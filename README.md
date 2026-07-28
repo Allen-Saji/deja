@@ -200,7 +200,7 @@ src/deja/          FastAPI service, LangGraph workflow, memory, and persistence
 dashboard/         Read-only Next.js operations dashboard
 scripts/           Deployment, smoke, replay, timeout, and node-loss acceptance
 deploy/            Isolated three-node CockroachDB test environment
-docs/              Architecture, observability, and submission material
+docs/              Official architecture and observability documentation
 tests/             Backend unit and contract tests
 spikes/            Early checkpoint and vector-search experiments
 ```
@@ -221,14 +221,6 @@ spikes/            Early checkpoint and vector-search experiments
 - Similarity recall is deliberately constrained by service and alert type.
 - Noise suppression requires stable repeated observations and never suppresses critical alerts.
 - Operator outcome capture is exposed through the API; a dedicated feedback UI is not included.
-
-## Submission kit
-
-- [Devpost draft](docs/submission/devpost.md)
-- [Judging map](docs/submission/judging-map.md)
-- [Demo recording runbook](docs/submission/demo-runbook.md)
-- [Video script](docs/submission/video-script.md)
-- [Final submission checklist](docs/submission/final-checklist.md)
 
 ## License
 
