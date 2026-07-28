@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +53,19 @@ def signed_headers(
     return {str(key): str(value) for key, value in request.headers.items()}
 
 
+def validated_base_url(value: str) -> str:
+    normalized = value.strip().rstrip("/")
+    parsed = urlparse(normalized)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Deja base URL must use http or https")
+    return normalized
+
+
 def submit_alert(
     base_url: str,
     payload: dict[str, Any],
@@ -60,7 +74,8 @@ def submit_alert(
     aws_region: str = "ap-south-1",
     wait_timeout: int = 240,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/alerts"
+    base_url = validated_base_url(base_url)
+    url = f"{base_url}/alerts"
     body = json.dumps(payload).encode()
     headers: dict[str, Any] = {"Content-Type": "application/json"}
     if aws_profile:
@@ -77,7 +92,7 @@ def submit_alert(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with urllib.request.urlopen(request, timeout=120) as response:  # nosec B310
             result = json.load(response)
     except urllib.error.HTTPError as error:
         error_body = error.read().decode(errors="replace")
@@ -85,7 +100,7 @@ def submit_alert(
     if result.get("status") != "queued" or not result.get("status_url"):
         return result
 
-    status_url = f"{base_url.rstrip('/')}{result['status_url']}"
+    status_url = f"{base_url}{result['status_url']}"
     deadline = time.monotonic() + wait_timeout
     while time.monotonic() < deadline:
         headers = {}
@@ -103,7 +118,7 @@ def submit_alert(
             method="GET",
         )
         try:
-            with urllib.request.urlopen(status_request, timeout=30) as response:
+            with urllib.request.urlopen(status_request, timeout=30) as response:  # nosec B310
                 current = json.load(response)
         except urllib.error.HTTPError as error:
             if error.code == 404:

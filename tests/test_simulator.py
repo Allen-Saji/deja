@@ -8,6 +8,22 @@ from botocore.credentials import Credentials
 from deja import simulator
 
 
+def test_base_url_rejects_non_http_schemes() -> None:
+    assert simulator.validated_base_url(" https://example.com/ ") == "https://example.com"
+
+    for invalid_url in (
+        "file:///etc/passwd",
+        "https://example.com?target=other",
+        "https://example.com#fragment",
+    ):
+        try:
+            simulator.validated_base_url(invalid_url)
+        except ValueError as error:
+            assert str(error) == "Deja base URL must use http or https"
+        else:
+            raise AssertionError(f"{invalid_url} should have been rejected")
+
+
 def test_signed_headers_add_lambda_authorization(monkeypatch) -> None:
     session = SimpleNamespace(get_credentials=lambda: Credentials("test-access", "test-secret"))
     monkeypatch.setattr("boto3.Session", lambda **_kwargs: session)

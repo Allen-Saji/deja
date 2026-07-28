@@ -72,7 +72,7 @@ DispatcherDependency = Annotated[Any, Depends(get_dispatcher)]
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "deja", "phase": "p4"}
+    return {"status": "ok", "service": "deja"}
 
 
 @app.get("/ready")

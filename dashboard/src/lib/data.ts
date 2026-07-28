@@ -3,7 +3,11 @@ import "server-only";
 import { attachDatabasePool } from "@vercel/functions";
 import { Pool } from "pg";
 
-import { buildLearningCurve, metricsFromRow } from "@/lib/snapshot";
+import {
+  buildLearningCurve,
+  metricsFromRow,
+  sanitizePublicText,
+} from "@/lib/snapshot";
 import type {
   DashboardSnapshot,
   IncidentRun,
@@ -33,6 +37,8 @@ function pool(): Pool {
       max: 3,
       connectionTimeoutMillis: 8_000,
       idleTimeoutMillis: 20_000,
+      query_timeout: 10_000,
+      statement_timeout: 8_000,
       application_name: "deja-dashboard",
       ssl: {
         rejectUnauthorized: true,
@@ -75,25 +81,40 @@ function mapAttempt(row: DatabaseRow): RunAttempt {
 }
 
 function mapRun(row: DatabaseRow): IncidentRun {
-  const triage =
+  const rawTriage =
     row.triage && typeof row.triage === "object"
-      ? (row.triage as IncidentRun["triage"])
+      ? (row.triage as NonNullable<IncidentRun["triage"]>)
       : null;
+  const triage = rawTriage
+    ? {
+        ...rawTriage,
+        diagnosis: sanitizePublicText(rawTriage.diagnosis),
+        recommended_action: sanitizePublicText(rawTriage.recommended_action),
+        rationale: sanitizePublicText(rawTriage.rationale),
+        postmortem_summary: sanitizePublicText(rawTriage.postmortem_summary),
+      }
+    : null;
   return {
     runId: asString(row.run_id),
     incidentId: asString(row.incident_id),
     fingerprint: asString(row.fingerprint),
-    service: asString(row.service),
-    alertType: asString(row.alert_type),
+    service: sanitizePublicText(asString(row.service)),
+    alertType: sanitizePublicText(asString(row.alert_type)),
     severity: asString(row.severity) as IncidentRun["severity"],
-    message: asString(row.message),
+    message: sanitizePublicText(asString(row.message)),
     status: asString(row.status),
     currentStep: asString(row.current_step),
     attemptCount: asNumber(row.attempt_count),
     lastResumeFrom: asOptionalString(row.last_resume_from),
     triage,
-    actionOutcome: asOptionalString(row.action_outcome),
-    postmortem: asOptionalString(row.postmortem),
+    actionOutcome:
+      row.action_outcome === null || row.action_outcome === undefined
+        ? null
+        : sanitizePublicText(asString(row.action_outcome)),
+    postmortem:
+      row.postmortem === null || row.postmortem === undefined
+        ? null
+        : sanitizePublicText(asString(row.postmortem)),
     diagnosisMs:
       row.diagnosis_ms === null || row.diagnosis_ms === undefined
         ? null
@@ -101,7 +122,10 @@ function mapRun(row: DatabaseRow): IncidentRun {
     precedentIds: asStringArray(row.precedent_ids),
     notificationSuppressed: asBoolean(row.notification_suppressed),
     selectedRunbookId: asOptionalString(row.selected_runbook_id),
-    selectedRunbookName: asOptionalString(row.selected_runbook_name),
+    selectedRunbookName:
+      row.selected_runbook_name === null || row.selected_runbook_name === undefined
+        ? null
+        : sanitizePublicText(asString(row.selected_runbook_name)),
     startedAt: asString(row.started_at),
     completedAt: asOptionalString(row.completed_at),
     attempts: [],
@@ -162,21 +186,35 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
         LIMIT 50
       `),
       client.query(`
+        WITH recent_runs AS (
+          SELECT run_id
+          FROM deja_runs
+          ORDER BY started_at DESC
+          LIMIT 50
+        )
         SELECT
-          run_id,
+          attempt.run_id,
           attempt_number,
           resumed_from,
           status,
           started_at::STRING AS started_at,
           finished_at::STRING AS finished_at,
           error_type
-        FROM deja_run_attempts
-        ORDER BY run_id, attempt_number
+        FROM deja_run_attempts AS attempt
+        JOIN recent_runs USING (run_id)
+        ORDER BY attempt.run_id, attempt_number
       `),
       client.query(`
-        SELECT run_id, node_name, created_at::STRING AS created_at
-        FROM deja_node_effects
-        ORDER BY run_id, created_at
+        WITH recent_runs AS (
+          SELECT run_id
+          FROM deja_runs
+          ORDER BY started_at DESC
+          LIMIT 50
+        )
+        SELECT effect.run_id, node_name, created_at::STRING AS created_at
+        FROM deja_node_effects AS effect
+        JOIN recent_runs USING (run_id)
+        ORDER BY effect.run_id, created_at
       `),
       client.query(`
         SELECT
@@ -235,8 +273,8 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
 
   const noiseLedgers: NoiseLedger[] = noiseResult.rows.map((row) => ({
     fingerprint: asString(row.fingerprint),
-    service: asString(row.service),
-    alertType: asString(row.alert_type),
+    service: sanitizePublicText(asString(row.service)),
+    alertType: sanitizePublicText(asString(row.alert_type)),
     occurrenceCount: asNumber(row.occurrence_count),
     stableCount: asNumber(row.stable_count),
     notificationSuppressed: asBoolean(row.notification_suppressed),
@@ -244,10 +282,10 @@ export async function getDashboardSnapshot(): Promise<DashboardSnapshot> {
   }));
   const runbooks: Runbook[] = runbooksResult.rows.map((row) => ({
     runbookId: asString(row.runbook_id),
-    name: asString(row.name),
-    service: asString(row.service),
-    alertType: asString(row.alert_type),
-    recommendedAction: asString(row.recommended_action),
+    name: sanitizePublicText(asString(row.name)),
+    service: sanitizePublicText(asString(row.service)),
+    alertType: sanitizePublicText(asString(row.alert_type)),
+    recommendedAction: sanitizePublicText(asString(row.recommended_action)),
     successCount: asNumber(row.success_count),
     failureCount: asNumber(row.failure_count),
     sampleCount: asNumber(row.sample_count),

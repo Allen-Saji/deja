@@ -5,10 +5,12 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 from time import sleep
 from typing import Any
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -206,6 +208,8 @@ def next_noise_state(
 class IncidentRepository:
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
+        self._schema_ready = False
+        self._schema_lock = Lock()
 
     @contextmanager
     def _connection(self) -> Iterator[psycopg.Connection[Any]]:
@@ -213,9 +217,15 @@ class IncidentRepository:
             yield connection
 
     def setup_schema(self) -> None:
-        with self._connection() as connection:
-            for statement in SCHEMA_STATEMENTS:
-                connection.execute(statement)
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            with self._connection() as connection:
+                for statement in SCHEMA_STATEMENTS:
+                    connection.execute(statement)
+            self._schema_ready = True
 
     def check_connection(self) -> None:
         with self._connection() as connection:
@@ -224,14 +234,17 @@ class IncidentRepository:
     def completed_incident_ids(self, incident_ids: list[str]) -> set[str]:
         if not incident_ids:
             return set()
-        placeholders = ", ".join("%s" for _incident_id in incident_ids)
+        placeholders = sql.SQL(", ").join(sql.Placeholder() for _incident_id in incident_ids)
+        query = sql.SQL(
+            """
+            SELECT incident_id
+            FROM deja_incidents
+            WHERE status = 'completed' AND incident_id IN ({placeholders})
+            """
+        ).format(placeholders=placeholders)
         with self._connection() as connection:
             rows = connection.execute(
-                f"""
-                SELECT incident_id
-                FROM deja_incidents
-                WHERE status = 'completed' AND incident_id IN ({placeholders})
-                """,
+                query,
                 tuple(incident_ids),
             ).fetchall()
         return {row["incident_id"] for row in rows}
@@ -669,8 +682,10 @@ class IncidentRepository:
         return RunbookScore.model_validate(row) if row else None
 
     @staticmethod
-    def _runbook_score_query(where_clause: str, order_clause: str) -> str:
-        return f"""
+    def _runbook_score_query(where_clause: str, order_clause: str) -> sql.Composed:
+        # Both fragments are private static query clauses selected by the two callers above.
+        return sql.SQL(
+            """
             SELECT
                 rb.runbook_id,
                 rb.name,
@@ -688,11 +703,15 @@ class IncidentRepository:
             FROM deja_runbooks AS rb
             LEFT JOIN deja_runbook_executions AS execution
               ON execution.runbook_id = rb.runbook_id
-            {where_clause}
+            {where}
             GROUP BY rb.runbook_id, rb.name, rb.service, rb.alert_type,
                      rb.recommended_action
-            {order_clause}
-        """
+            {order}
+            """
+        ).format(
+            where=sql.SQL(where_clause),
+            order=sql.SQL(order_clause),
+        )
 
     def record_runbook_selection(self, run_id: str, runbook_id: str) -> None:
         with self._connection() as connection:
@@ -783,22 +802,26 @@ class IncidentRepository:
                     """,
                     (error_type[:100], execution_token),
                 )
-            token_clause = "AND execution_token = %s" if execution_token else ""
-            parameters: tuple[Any, ...] = (
-                (error_type[:100], run_id, execution_token)
-                if execution_token
-                else (error_type[:100], run_id)
-            )
-            connection.execute(
-                """
-                UPDATE deja_runs
-                SET status = 'failed', error_type = %s,
-                    execution_token = NULL, lease_expires_at = NULL
-                WHERE run_id = %s
-                """
-                + token_clause,
-                parameters,
-            )
+            if execution_token is not None:
+                connection.execute(
+                    """
+                    UPDATE deja_runs
+                    SET status = 'failed', error_type = %s,
+                        execution_token = NULL, lease_expires_at = NULL
+                    WHERE run_id = %s AND execution_token = %s
+                    """,
+                    (error_type[:100], run_id, execution_token),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE deja_runs
+                    SET status = 'failed', error_type = %s,
+                        execution_token = NULL, lease_expires_at = NULL
+                    WHERE run_id = %s
+                    """,
+                    (error_type[:100], run_id),
+                )
 
     def get_run(self, run_id: str) -> RunRecord | None:
         with self._connection() as connection:

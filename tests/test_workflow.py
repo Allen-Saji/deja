@@ -134,7 +134,7 @@ class SaverContext:
         return None
 
 
-def test_graph_runs_the_p2_path_without_external_action() -> None:
+def test_graph_runs_the_full_path_without_external_action() -> None:
     repository = FakeRepository()
     memory = FakeMemory()
     app = build_graph(repository, FakeTriager(), MemorySaver(), memory)

@@ -4,6 +4,12 @@ import type {
   LearningPoint,
 } from "@/lib/types";
 
+const RELEASE_NAMES = ["exploration", "foundation", "memory", "resilience", "production"];
+
+export function sanitizePublicText(value: string): string {
+  return value.replace(/\bp([0-4])\b/gi, (_match, index: string) => RELEASE_NAMES[Number(index)]);
+}
+
 export function buildLearningCurve(runs: IncidentRun[]): LearningPoint[] {
   return runs
     .filter(
@@ -37,18 +43,22 @@ export function bestReplayImprovement(points: LearningPoint[]): number | null {
   let best: number | null = null;
   for (const servicePoints of byService.values()) {
     const cold = servicePoints.find((point) => point.precedentCount === 0);
-    const assisted = servicePoints.find(
-      (point) =>
-        point.precedentCount > 0 &&
-        cold !== undefined &&
-        new Date(point.startedAt).getTime() > new Date(cold.startedAt).getTime(),
-    );
-    if (!cold || !assisted || assisted.diagnosisMs >= cold.diagnosisMs) {
+    if (!cold) {
       continue;
     }
-    const improvement =
-      ((cold.diagnosisMs - assisted.diagnosisMs) / cold.diagnosisMs) * 100;
-    best = best === null ? improvement : Math.max(best, improvement);
+    const assistedPoints = servicePoints.filter(
+      (point) =>
+        point.precedentCount > 0 &&
+        new Date(point.startedAt).getTime() > new Date(cold.startedAt).getTime(),
+    );
+    for (const assisted of assistedPoints) {
+      if (assisted.diagnosisMs >= cold.diagnosisMs) {
+        continue;
+      }
+      const improvement =
+        ((cold.diagnosisMs - assisted.diagnosisMs) / cold.diagnosisMs) * 100;
+      best = best === null ? improvement : Math.max(best, improvement);
+    }
   }
   return best;
 }

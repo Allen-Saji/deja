@@ -1,7 +1,9 @@
+from contextlib import contextmanager
+
 import psycopg
 
 from deja.models import NoiseStatus, TriageDecision
-from deja.repository import IncidentRepository, next_noise_state
+from deja.repository import SCHEMA_STATEMENTS, IncidentRepository, next_noise_state
 
 
 def test_noise_suppression_requires_three_stable_eligible_observations() -> None:
@@ -30,6 +32,26 @@ def test_noise_suppression_requires_three_stable_eligible_observations() -> None
     assert first == (1, 1, False)
     assert second == (2, 2, False)
     assert third == (3, 3, True)
+
+
+def test_schema_setup_runs_once_per_repository_instance(monkeypatch) -> None:
+    repository = IncidentRepository("postgresql://unused")
+    statements: list[str] = []
+
+    class Connection:
+        def execute(self, statement: str) -> None:
+            statements.append(statement)
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    monkeypatch.setattr(repository, "_connection", connection)
+
+    repository.setup_schema()
+    repository.setup_schema()
+
+    assert statements == list(SCHEMA_STATEMENTS)
 
 
 def test_critical_or_escalated_observation_resets_suppression_streak() -> None:

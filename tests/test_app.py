@@ -7,6 +7,7 @@ from deja.app import (
     create_runbook,
     get_run,
     handler,
+    health,
     opaque_error_handler,
     ready,
     record_runbook_outcome,
@@ -64,6 +65,10 @@ class FakeDispatcher:
 
     def dispatch(self, event) -> None:
         self.events.append(event)
+
+
+def test_health_exposes_only_stable_service_identity() -> None:
+    assert health() == {"status": "ok", "service": "deja"}
 
 
 def test_processing_error_is_converted_to_opaque_http_error() -> None:

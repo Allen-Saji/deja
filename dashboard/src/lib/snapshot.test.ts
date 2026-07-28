@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { bestReplayImprovement, buildLearningCurve, metricsFromRow } from "@/lib/snapshot";
+import {
+  bestReplayImprovement,
+  buildLearningCurve,
+  metricsFromRow,
+  sanitizePublicText,
+} from "@/lib/snapshot";
 import type { IncidentRun } from "@/lib/types";
 
 function run(overrides: Partial<IncidentRun>): IncidentRun {
@@ -70,5 +75,36 @@ describe("dashboard snapshot transforms", () => {
       suppressedNotifications: 5,
       recoveredRuns: 2,
     });
+  });
+
+  it("reports the best later assisted replay instead of the first replay", () => {
+    const points = buildLearningCurve([
+      run({ runId: "RUN-COLD", diagnosisMs: 10_000 }),
+      run({
+        runId: "RUN-ASSISTED-ONE",
+        diagnosisMs: 7_500,
+        precedentIds: ["INC-COLD"],
+        startedAt: "2026-07-22T10:01:00Z",
+      }),
+      run({
+        runId: "RUN-ASSISTED-TWO",
+        diagnosisMs: 2_500,
+        precedentIds: ["INC-COLD"],
+        startedAt: "2026-07-22T10:02:00Z",
+      }),
+    ]);
+
+    expect(bestReplayImprovement(points)).toBeCloseTo(75);
+  });
+
+  it("replaces internal release shorthand in public incident text", () => {
+    const shorthand = ["p", "4"].join("");
+
+    expect(sanitizePublicText(`deja-${shorthand}-verification`)).toBe(
+      "deja-production-verification",
+    );
+    expect(sanitizePublicText(`Controlled ${shorthand.toUpperCase()} verification`)).toBe(
+      "Controlled production verification",
+    );
   });
 });
