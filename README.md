@@ -71,9 +71,9 @@ CockroachDB Cloud database.
 
 | Capability | Verified evidence |
 | --- | --- |
-| Normal alert flow | `RUN-E1D6DD5025E8` queued and completed all five graph nodes |
-| Timeout recovery | `RUN-591F981A5EDB` timed out before triage; the retry resumed at triage and completed in 2.966 seconds |
-| Database node loss | The local three-node CockroachDB acceptance killed one node before triage and completed through the remaining quorum |
+| Normal alert flow | `RUN-DED9BC1C7367` completed all five graph nodes and cited two prior incidents |
+| Timeout recovery | `RUN-65FE655CA00C` recorded an expired first lease; attempt two resumed at triage and completed |
+| Database node loss | `RUN-158320F0EDDE` completed after the local three-node acceptance stopped one node before triage |
 | Production observability | `RUN-3E482889BBA4` completed in 4.334 seconds with structured CloudWatch events from acceptance through completion |
 | Read-only inspection | Managed MCP queried the live cluster through a scoped read-only principal |
 | Public operations view | The Vercel dashboard serves a sanitized, auto-refreshing snapshot with no database or provider credentials |
@@ -221,6 +221,14 @@ spikes/            Early checkpoint and vector-search experiments
 - Similarity recall is deliberately constrained by service and alert type.
 - Noise suppression requires stable repeated observations and never suppresses critical alerts.
 - Operator outcome capture is exposed through the API; a dedicated feedback UI is not included.
+
+## Submission kit
+
+- [Devpost draft](docs/submission/devpost.md)
+- [Judging map](docs/submission/judging-map.md)
+- [Demo recording runbook](docs/submission/demo-runbook.md)
+- [Video script](docs/submission/video-script.md)
+- [Final submission checklist](docs/submission/final-checklist.md)
 
 ## License
 
