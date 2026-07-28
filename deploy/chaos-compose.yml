@@ -1,4 +1,4 @@
-name: deja-p3-chaos
+name: deja-node-failure
 
 services:
   crdb-1:
@@ -19,7 +19,7 @@ services:
       - "26258:26257"
       - "8081:8080"
     volumes:
-      - deja-p3-crdb-1:/cockroach/cockroach-data
+      - deja-node-failure-crdb-1:/cockroach/cockroach-data
 
   crdb-2:
     image: cockroachdb/cockroach:v26.2.3
@@ -36,7 +36,7 @@ services:
       - --max-sql-memory=128MiB
     hostname: crdb-2
     volumes:
-      - deja-p3-crdb-2:/cockroach/cockroach-data
+      - deja-node-failure-crdb-2:/cockroach/cockroach-data
 
   crdb-3:
     image: cockroachdb/cockroach:v26.2.3
@@ -53,9 +53,9 @@ services:
       - --max-sql-memory=128MiB
     hostname: crdb-3
     volumes:
-      - deja-p3-crdb-3:/cockroach/cockroach-data
+      - deja-node-failure-crdb-3:/cockroach/cockroach-data
 
 volumes:
-  deja-p3-crdb-1:
-  deja-p3-crdb-2:
-  deja-p3-crdb-3:
+  deja-node-failure-crdb-1:
+  deja-node-failure-crdb-2:
+  deja-node-failure-crdb-3:

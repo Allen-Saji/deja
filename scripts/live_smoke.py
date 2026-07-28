@@ -1,4 +1,4 @@
-"""Run one real P2 workflow against configured Groq, VoyageAI, and CockroachDB."""
+"""Run one real workflow against configured Groq, VoyageAI, and CockroachDB."""
 
 import json
 

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import shutil
+import subprocess  # nosec B404
 import time
 from pathlib import Path
 
@@ -13,14 +14,19 @@ from deja.models import Alert, Precedent, TriageDecision
 from deja.repository import IncidentRepository
 from deja.workflow import IncidentService
 
+# The executable is resolved explicitly and subprocess never invokes a shell.
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = ROOT / "deploy" / "chaos-compose.yml"
 DATABASE_URL = "postgresql://root@localhost:26258/defaultdb?sslmode=disable"
 
 
 def compose(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", "compose", "-f", str(COMPOSE_FILE), *arguments],
+    docker = shutil.which("docker")
+    if docker is None:
+        raise RuntimeError("docker is required for the node-failure acceptance")
+    # Every argument is selected by this acceptance script.
+    return subprocess.run(  # nosec B603
+        [docker, "compose", "-f", str(COMPOSE_FILE), *arguments],
         check=check,
         cwd=ROOT,
         text=True,
@@ -111,7 +117,7 @@ def main() -> None:
         alert_type="connection-pool-saturation",
         severity="critical",
         message="Pool wait time rose from 4 ms to 920 ms after deploy",
-        labels={"environment": "p3-chaos"},
+        labels={"environment": "node-failure-acceptance"},
     )
     _accepted, event = service.prepare_alert(alert)
     wait_for_three_replicas()
@@ -127,7 +133,7 @@ def main() -> None:
     try:
         result = service.execute_run(
             event,
-            execution_token="P3-NODE-FAILURE",
+            execution_token=event.run_id,
             failure_hook=kill_second_node,
         )
         if result is None:

@@ -1,4 +1,4 @@
-"""Exercise the P2 noise ledger and runbook ranking against CockroachDB."""
+"""Exercise the noise ledger and runbook ranking against CockroachDB."""
 
 from __future__ import annotations
 
@@ -9,6 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from deja.models import Alert, RunbookCreate, TriageDecision
 from deja.repository import IncidentRepository
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
 
 
 def identifier(prefix: str) -> str:
@@ -60,15 +65,15 @@ def main() -> None:
         recommended_action="Observe without external remediation.",
         rationale="The acceptance alert is stable and non-critical.",
         escalate=False,
-        postmortem_summary="Synthetic P2 noise-ledger acceptance event.",
+        postmortem_summary="Synthetic noise-ledger acceptance event.",
     )
 
     suppression_results = []
     noise_run_ids = []
     for _index in range(3):
-        run_id = identifier("RUN-P2-NOISE")
+        run_id = identifier("RUN-NOISE")
         noise_run_ids.append(run_id)
-        incident_id = identifier("INC-P2-NOISE")
+        incident_id = identifier("INC-NOISE")
         repository.begin_run(
             alert=warning,
             run_id=run_id,
@@ -95,22 +100,28 @@ def main() -> None:
         )
         suppression_results.append(status.notification_suppressed)
 
-    assert suppression_results == [False, False, True]
+    require(
+        suppression_results == [False, False, True],
+        "duplicate notification suppression did not activate on the third stable observation",
+    )
     replayed_first = repository.record_noise_observation(
         run_id=noise_run_ids[0],
         fingerprint=warning.fingerprint(),
         severity=warning.severity,
         triage=stable_triage,
     )
-    assert replayed_first.notification_suppressed is False
+    require(
+        replayed_first.notification_suppressed is False,
+        "replaying the first observation changed its persisted suppression decision",
+    )
 
     concurrent_warning = warning.model_copy(
         update={"service": f"deja-concurrency-{session}"}
     )
     concurrent_runs = []
     for _index in range(5):
-        run_id = identifier("RUN-P2-CONCURRENT")
-        incident_id = identifier("INC-P2-CONCURRENT")
+        run_id = identifier("RUN-CONCURRENT")
+        incident_id = identifier("INC-CONCURRENT")
         repository.begin_run(
             alert=concurrent_warning,
             run_id=run_id,
@@ -139,10 +150,13 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=5) as executor:
         concurrent_suppression = list(executor.map(observe_concurrently, concurrent_runs))
-    assert concurrent_suppression.count(True) == 3
+    require(
+        concurrent_suppression.count(True) == 3,
+        "concurrent observations produced an unexpected suppression count",
+    )
 
-    low_id = identifier("RB-P2-LOW")
-    high_id = identifier("RB-P2-HIGH")
+    low_id = identifier("RB-LOW")
+    high_id = identifier("RB-HIGH")
     low = repository.upsert_runbook(
         low_id,
         RunbookCreate(
@@ -163,8 +177,8 @@ def main() -> None:
     )
 
     for runbook_id, succeeded in ((low.runbook_id, False), (high.runbook_id, True)):
-        run_id = identifier("RUN-P2-RUNBOOK")
-        incident_id = identifier("INC-P2-RUNBOOK")
+        run_id = identifier("RUN-RUNBOOK")
+        incident_id = identifier("INC-RUNBOOK")
         complete_acceptance_run(
             repository,
             alert=warning,
@@ -174,17 +188,22 @@ def main() -> None:
         )
         repository.record_runbook_selection(run_id, runbook_id)
         score = repository.record_runbook_outcome(run_id, succeeded)
-        assert score is not None
+        require(score is not None, "runbook outcome did not return a score")
         if runbook_id == low.runbook_id:
             unchanged = repository.record_runbook_outcome(run_id, True)
-            assert unchanged is not None
-            assert unchanged.success_count == 0
-            assert unchanged.failure_count == 1
+            require(unchanged is not None, "idempotent runbook outcome lookup failed")
+            require(unchanged.success_count == 0, "runbook outcome was overwritten")
+            require(unchanged.failure_count == 1, "recorded runbook failure was lost")
 
     selected = repository.select_runbook(warning)
-    assert selected is not None
-    assert selected.runbook_id == high.runbook_id
-    assert selected.efficacy_score > repository.get_runbook_score(low.runbook_id).efficacy_score
+    require(selected is not None, "no runbook was selected")
+    require(selected.runbook_id == high.runbook_id, "lower-efficacy runbook was selected")
+    low_score = repository.get_runbook_score(low.runbook_id)
+    require(low_score is not None, "lower-efficacy runbook score was not found")
+    require(
+        selected.efficacy_score > low_score.efficacy_score,
+        "runbook efficacy ordering was not preserved",
+    )
 
     print(
         json.dumps(

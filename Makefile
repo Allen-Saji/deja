@@ -1,7 +1,7 @@
-.PHONY: p3-lambda-timeout p3-crdb-node-failure
+.PHONY: lambda-timeout-acceptance crdb-node-failure-acceptance
 
-p3-lambda-timeout:
-	.venv/bin/python scripts/p3_lambda_timeout.py
+lambda-timeout-acceptance:
+	.venv/bin/python scripts/lambda_timeout_acceptance.py
 
-p3-crdb-node-failure:
-	.venv/bin/python scripts/p3_crdb_node_failure.py
+crdb-node-failure-acceptance:
+	.venv/bin/python scripts/crdb_node_failure_acceptance.py

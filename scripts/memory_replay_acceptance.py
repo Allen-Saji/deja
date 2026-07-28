@@ -1,4 +1,4 @@
-"""Prove novel-then-recalled P2 behavior through the deployed HTTP API."""
+"""Prove novel-then-recalled behavior through the deployed HTTP API."""
 
 from __future__ import annotations
 
@@ -7,6 +7,11 @@ import json
 import uuid
 
 from deja.simulator import submit_alert
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,11 +42,17 @@ def main() -> None:
     novel = submit_alert(args.url, payload, **request_options)
     replay = submit_alert(args.url, payload, **request_options)
 
-    assert novel["status"] == "completed"
-    assert novel["precedent_ids"] == []
-    assert replay["status"] == "completed"
-    assert novel["incident_id"] in replay["precedent_ids"]
-    assert novel["incident_id"] in replay["triage"]["cited_incident_ids"]
+    require(novel["status"] == "completed", "novel incident did not complete")
+    require(novel["precedent_ids"] == [], "novel incident unexpectedly recalled a precedent")
+    require(replay["status"] == "completed", "replayed incident did not complete")
+    require(
+        novel["incident_id"] in replay["precedent_ids"],
+        "replayed incident did not retrieve the novel incident",
+    )
+    require(
+        novel["incident_id"] in replay["triage"]["cited_incident_ids"],
+        "replayed diagnosis did not cite the retrieved incident",
+    )
 
     print(
         json.dumps(

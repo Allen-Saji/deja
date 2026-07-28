@@ -60,7 +60,7 @@ def main() -> None:
         alert_type="connection-pool-saturation",
         severity="critical",
         message="Pool wait time rose from 4 ms to 920 ms after deploy",
-        labels={"environment": "p3-timeout", "region": args.aws_region},
+        labels={"environment": "timeout-acceptance", "region": args.aws_region},
     )
     event = RunExecutionEvent(
         run_id=f"RUN-{uuid.uuid4().hex[:12].upper()}",
@@ -76,7 +76,7 @@ def main() -> None:
         Payload=json.dumps(event.model_dump(mode="json"), separators=(",", ":")).encode(),
     )
     if response.get("StatusCode") != 202:
-        raise RuntimeError("Lambda did not queue the P3 timeout event")
+        raise RuntimeError("Lambda did not queue the timeout event")
 
     deadline = time.monotonic() + args.timeout
     record = None
