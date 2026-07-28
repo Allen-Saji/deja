@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
+import urllib.error
+import urllib.request
 import uuid
 from time import time_ns
+from typing import Any
 
 import boto3
 
-from deja.config import configure_root_certificate
 from deja.models import Alert, ChaosSpec, RunExecutionEvent
-from deja.repository import IncidentRepository
+from deja.simulator import signed_headers, validated_base_url
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,23 +23,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--aws-profile", default="deja")
     parser.add_argument("--aws-region", default="ap-south-1")
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--url", help="Deja Function URL; discovered from AWS when omitted")
     return parser.parse_args()
 
 
-def database_url() -> str:
-    value = os.environ.get("DATABASE_URL", "").strip()
-    if not value:
-        raise SystemExit("DATABASE_URL is required")
-    return configure_root_certificate(
-        value,
-        os.environ.get("DATABASE_CA_CERT", "").strip(),
+def get_json(
+    base_url: str,
+    path: str,
+    *,
+    aws_profile: str,
+    aws_region: str,
+) -> Any | None:
+    url = f"{base_url}{path}"
+    request = urllib.request.Request(
+        url,
+        headers=signed_headers(
+            method="GET",
+            url=url,
+            body=b"",
+            profile=aws_profile,
+            region=aws_region,
+        ),
+        method="GET",
     )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
 
 
 def main() -> None:
     args = parse_args()
-    repository = IncidentRepository(database_url())
-    repository.setup_schema()
     session = boto3.Session(
         profile_name=args.aws_profile,
         region_name=args.aws_region,
@@ -54,6 +72,10 @@ def main() -> None:
     )
     if not chaos_enabled:
         raise SystemExit("Lambda DEJA_CHAOS_ENABLED must be true for this acceptance run")
+    base_url = validated_base_url(
+        args.url
+        or client.get_function_url_config(FunctionName=args.function_name)["FunctionUrl"]
+    )
 
     alert = Alert(
         service=f"deja-timeout-{uuid.uuid4().hex[:10]}",
@@ -81,29 +103,41 @@ def main() -> None:
     deadline = time.monotonic() + args.timeout
     record = None
     while time.monotonic() < deadline:
-        record = repository.get_run(event.run_id)
-        if record is not None and record.status == "completed":
+        record = get_json(
+            base_url,
+            f"/runs/{event.run_id}",
+            aws_profile=args.aws_profile,
+            aws_region=args.aws_region,
+        )
+        if record is not None and record["status"] == "completed":
             break
         time.sleep(5)
-    if record is None or record.status != "completed":
+    if record is None or record["status"] != "completed":
         raise TimeoutError("timeout-injected run did not complete")
 
-    attempts = repository.get_run_attempts(event.run_id)
+    attempts = get_json(
+        base_url,
+        f"/runs/{event.run_id}/attempts",
+        aws_profile=args.aws_profile,
+        aws_region=args.aws_region,
+    )
+    if not isinstance(attempts, list):
+        raise RuntimeError("Lambda attempt ledger was not available")
     if len(attempts) < 2:
         raise RuntimeError("Lambda did not record a retry attempt")
-    if attempts[-1].resumed_from != "triage":
+    if attempts[-1]["resumed_from"] != "triage":
         raise RuntimeError("Lambda retry did not resume from triage")
-    if attempts[-1].status != "completed":
+    if attempts[-1]["status"] != "completed":
         raise RuntimeError("resumed Lambda attempt did not complete")
 
     print(
         json.dumps(
             {
                 "run_id": event.run_id,
-                "status": record.status,
-                "attempt_count": record.attempt_count,
-                "attempts": [attempt.model_dump() for attempt in attempts],
-                "resumed_from": attempts[-1].resumed_from,
+                "status": record["status"],
+                "attempt_count": record["attempt_count"],
+                "attempts": attempts,
+                "resumed_from": attempts[-1]["resumed_from"],
             },
             indent=2,
         )
