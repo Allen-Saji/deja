@@ -1,4 +1,4 @@
-# P4 read-only observability evidence
+# Read-only observability evidence
 
 Verified on 2026-07-26.
 
@@ -40,8 +40,8 @@ directly to the Deja Vercel project's sensitive Production and Preview environme
 written to a repository file.
 
 The final grant audit found that CockroachDB's `public` role initially had schema `CREATE`, which
-the dashboard principal inherited. P4 revoked `CREATE ON SCHEMA public` from `public`. Verification
-then showed:
+the dashboard principal inherited. That privilege was revoked from `public`. Verification then
+showed:
 
 ```text
 deja_dashboard schema CREATE: false
